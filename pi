@@ -1,0 +1,374 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() { printf 'pi: %s\n' "$*" >&2; exit 1; }
+
+resolve_script_dir() {
+    local source="${BASH_SOURCE[0]}" count=0
+    while [[ -L "$source" ]]; do
+        count=$((count + 1))
+        [[ $count -le 40 ]] || die 'script symlink loop'
+        SCRIPT_DIR="$(CDPATH= cd -P -- "$(dirname -- "$source")" && pwd)"
+        source="$(readlink -- "$source")"
+        [[ "$source" == /* ]] || source="$SCRIPT_DIR/$source"
+    done
+    SCRIPT_DIR="$(CDPATH= cd -P -- "$(dirname -- "$source")" && pwd)"
+}
+
+usage() {
+    cat <<'EOF'
+Usage: pi [wrapper options] [omp arguments]
+
+  --pi-help           Show wrapper help (native help: pi -- --help)
+  --pi-debug          Keep the container and print inspection/removal commands
+  --pi-profile NAME   Select a native isolated profile and optional YAML overlay
+  --                  Stop wrapper parsing; forward remaining arguments literally
+
+Native arguments are preserved as an array. Explicit native --profile wins over
+environment defaults; conflicting explicit wrapper/native profiles are rejected.
+Last native --profile wins. Names are 1-64 lowercase letters/digits, dots,
+underscores or hyphens, starting with a letter/digit; no trailing dot or reserved
+Windows device names. Empty/whitespace/default selects default. OMP_PROFILE,
+even when empty, takes precedence over PI_PROFILE.
+
+Environment: OMPD_IMAGE (ompd:latest), OMPD_DATA_DIR (repo/data; absolute),
+OMPD_PROFILE (default), OMP_PROFILE / PI_PROFILE (native selection),
+OMPD_DISPLAY (override DISPLAY), OMPD_NO_BANNER (suppress launch summary).
+EOF
+}
+
+normalize_profile() {
+    # oh-my-pi v18.4.10 packages/utils/src/dirs.ts normalizeProfileName.
+    # POSIX/Bash whitespace trimming, not JavaScript's full Unicode trim set.
+    local value="$1" LC_ALL=C
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    NORMALIZED_PROFILE="${value:-default}"
+    [[ "$NORMALIZED_PROFILE" != default ]] || return 0
+    [[ "$value" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ && "$value" != *. &&
+       ! "$value" =~ ^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$ ]] ||
+        die 'unsafe profile name: use 1-64 lowercase letters/digits, dots, underscores or hyphens; start with a letter/digit, no trailing dot or reserved device names'
+}
+
+native_flag_kind() {
+    # Mirrored oh-my-pi v18.4.10 coding-agent/src/cli/flag-tables.ts.
+    # --plan is bootstrap-shadowable; unknown long flags consume value-like
+    # successors only. Inline values never consume a separate argv token.
+    FLAG_KIND=none
+    case "$1" in
+        --plan) FLAG_KIND=shadow ;;
+        --cwd|--config|--add-dir|--mode|--fork|--provider|--model|--smol|--slow|--prewalk-into|--plan-yolo-into|--max-time|--service-tier|--api-key|--system-prompt|--system-prompt-template|--append-system-prompt|--provider-session-id|--prompt-cache-key|--session-dir|--models|--tools|--thinking|--export|--hook|--extension|-e|--trusted-extension|--plugin-dir|--skills|--approval-mode)
+            FLAG_KIND=string ;;
+        --resume|-r|--session) FLAG_KIND=optional ;;
+        --help|--version|--allow-home|--continue|--from-claude|--from-codex|--no-session|--no-tools|--no-lsp|--no-pty|--hide-thinking|--advisor|--external-thinking|--prewalk|--no-prewalk|--plan-yolo|--print|--print-thoughts|--no-extensions|--no-skills|--no-rules|--no-title|--no-ui|--auto-approve|--yolo|--*=*) ;;
+        --*) FLAG_KIND=unknown ;;
+    esac
+}
+
+native_consumes_value() {
+    # Call only when a successor exists; empty optional values are rejected.
+    case "$FLAG_KIND" in
+        string) return 0 ;;
+        optional) [[ -n "$1" && "$1" != -* ]] ;;
+        shadow|unknown) [[ "$1" != -* ]] ;;
+        *) return 1 ;;
+    esac
+}
+
+native_is_subcommand() {
+    # oh-my-pi v18.4.10 coding-agent/src/cli-commands.ts names + aliases.
+    case "$1" in
+        launch|acp|auth-broker|auth-gateway|agents|bench|browser-relay|cleanse|collab|commit|completions|__complete|compress|config|dry-balance|find|gc|grep|gallery|git|grievances|images|img|if-bench|install|join|login|models|plugin|plugins|predict|ps|say|clip|play|share|setup|shell|read|render|skill|skills|ssh|stats|stream|update|usage|tiny-models|token|toks|ttsr|worktree|wt|search|q|web-search) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+parse_args() {
+    OMP_ARGS=()
+    WRAPPER_PROFILE=''
+    DEBUG_MODE=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --pi-help) usage >&2; exit 0 ;;
+            --pi-debug) DEBUG_MODE=true; shift ;;
+            --pi-profile)
+                [[ $# -ge 2 ]] || die '--pi-profile requires NAME'
+                normalize_profile "$2"
+                [[ -z "$WRAPPER_PROFILE" || "$WRAPPER_PROFILE" == "$NORMALIZED_PROFILE" ]] || die 'conflicting wrapper profiles'
+                WRAPPER_PROFILE="$NORMALIZED_PROFILE"; shift 2 ;;
+            --) shift; OMP_ARGS+=("$@"); break ;;
+            *) OMP_ARGS+=("$1"); shift ;;
+        esac
+    done
+
+    # Mirror v18.4.10 cli/profile-bootstrap.ts without changing raw OMP_ARGS.
+    # Only the first residual token can end global profile extraction at a
+    # command boundary; launch/acp keep accepting launch-shaped global flags.
+    local index=0 arg value native_profile='' can_dispatch=true boundary=false
+    local residual=()
+    while [[ $index -lt ${#OMP_ARGS[@]} ]]; do
+        arg="${OMP_ARGS[$index]}"
+        if [[ "$boundary" == true ]]; then
+            [[ "$arg" == -* ]] || residual+=(--omp-profile-boundary)
+            boundary=false
+        fi
+        case "$arg" in
+            --) residual+=("${OMP_ARGS[@]:$index}"); break ;;
+            --profile|--profile=*|--alias|--alias=*)
+                if [[ "$arg" == --profile || "$arg" == --alias ]]; then
+                    index=$((index + 1))
+                    [[ $index -lt ${#OMP_ARGS[@]} ]] || die "${arg} requires NAME"
+                    value="${OMP_ARGS[$index]}"
+                    [[ -n "$value" && "$value" != -* ]] || die "${arg} requires NAME"
+                else
+                    value="${arg#*=}"
+                    [[ -n "$value" ]] || die "${arg%%=*} requires NAME"
+                fi
+                [[ "$arg" != --profile && "$arg" != --profile=* ]] || native_profile="$value"
+                if [[ ${#residual[@]} -gt 0 ]]; then
+                    native_flag_kind "${residual[${#residual[@]}-1]}"
+                    case "$FLAG_KIND" in optional|shadow|unknown) boundary=true ;; esac
+                fi
+                index=$((index + 1)); continue ;;
+        esac
+        if [[ "$can_dispatch" == true && "$arg" != launch && "$arg" != acp ]] && native_is_subcommand "$arg"; then
+            residual+=("${OMP_ARGS[@]:$index}"); break
+        fi
+        can_dispatch=false
+        residual+=("$arg")
+        native_flag_kind "$arg"
+        if [[ $((index + 1)) -lt ${#OMP_ARGS[@]} ]] && native_consumes_value "${OMP_ARGS[$((index + 1))]}"; then
+            index=$((index + 1))
+            residual+=("${OMP_ARGS[$index]}")
+        fi
+        index=$((index + 1))
+    done
+    # Upstream normalizes the final captured native value, not overwritten ones.
+    if [[ -n "$native_profile" ]]; then
+        normalize_profile "$native_profile"
+        native_profile="$NORMALIZED_PROFILE"
+    fi
+    if [[ -n "$native_profile" && -n "$WRAPPER_PROFILE" && "$native_profile" != "$WRAPPER_PROFILE" ]]; then
+        die 'explicit --pi-profile and native --profile disagree'
+    fi
+    if [[ -n "$native_profile" || -n "$WRAPPER_PROFILE" ]]; then
+        SELECTED_PROFILE="${native_profile:-$WRAPPER_PROFILE}"
+    else
+        # Defined-empty OMP_PROFILE selects default, never PI_PROFILE/OMPD_PROFILE.
+        normalize_profile "${OMP_PROFILE-${PI_PROFILE-${OMPD_PROFILE-default}}}"
+        SELECTED_PROFILE="$NORMALIZED_PROFILE"
+    fi
+
+    # Detect machine launch flags and ACP behind leading flags, skipping their
+    # values and stopping at command-owned flags (cli-commands.ts boundaries).
+    MACHINE_MODE=false
+    index=0; can_dispatch=true
+    # resolveCliArgv leaves leading help/version untouched rather than hoisting
+    # a later command-looking token such as `--help acp`.
+    case "${residual[0]:-}" in --help|-h|--version|-v|help) can_dispatch=false ;; esac
+    while [[ $index -lt ${#residual[@]} ]]; do
+        arg="${residual[$index]}"
+        [[ "$arg" != -- ]] || break
+        if [[ "$can_dispatch" == true && "$arg" != -* ]]; then
+            if native_is_subcommand "$arg"; then
+                case "$arg" in
+                    acp) MACHINE_MODE=true ;;
+                    launch) ;;
+                    *) MACHINE_MODE=false; break ;;
+                esac
+            fi
+            can_dispatch=false
+        fi
+        case "$arg" in
+            --print|-p|--mode=rpc|--mode=json|--mode=acp) MACHINE_MODE=true ;;
+            --mode)
+                value="${residual[$((index + 1))]:-}"
+                case "$value" in rpc|json|acp) MACHINE_MODE=true ;; esac ;;
+        esac
+        native_flag_kind "$arg"
+        if [[ $((index + 1)) -lt ${#residual[@]} ]] && native_consumes_value "${residual[$((index + 1))]}"; then
+            index=$((index + 1))
+        fi
+        index=$((index + 1))
+    done
+    # Profile environment is normalized at launch, without inserting any flags
+    # that could change native subcommand parsing. All raw arguments stay intact.
+}
+
+check_mount_path() {
+    [[ "$1" != *,* ]] || die "Docker --mount cannot represent a comma in this path: $1"
+}
+
+prepare_data() {
+    DATA_DIR="${OMPD_DATA_DIR:-$SCRIPT_DIR/data}"
+    [[ "$DATA_DIR" == /* ]] || die 'OMPD_DATA_DIR must be absolute'
+    [[ ! -L "$DATA_DIR" ]] || die 'refusing symlinked persistent home; use a real directory'
+    mkdir -p -- "$DATA_DIR" || die 'cannot create persistent home; check permissions and build UID/GID'
+    DATA_DIR="$(CDPATH= cd -P -- "$DATA_DIR" && pwd)"
+    [[ "$DATA_DIR" != / ]] || die 'refusing to use / as the persistent home'
+    check_mount_path "$DATA_DIR"
+    local relative='.omp/agent' component path="$DATA_DIR"
+    if [[ "$SELECTED_PROFILE" != default ]]; then
+        relative=".omp/profiles/$SELECTED_PROFILE/agent"
+    fi
+    local components=()
+    IFS=/ read -r -a components <<< "$relative"
+    for component in "${components[@]}"; do
+        path="$path/$component"
+        [[ ! -L "$path" ]] || die "refusing to seed through symlink: $path"
+        mkdir -p -- "$path" || die 'cannot create native state directory; check data ownership and build UID/GID'
+        [[ -d "$path" && -w "$path" ]] || die "agent directory is not writable: $path"
+    done
+    AGENT_DIR="$path"
+    seed_config config.yml config.yaml settings.json
+    # Optional native templates; do not replace legacy or alternate spellings.
+    seed_config models.yml models.yaml models.json
+}
+
+seed_config() {
+    local filename="$1" existing
+    [[ -f "$SCRIPT_DIR/config/$filename" ]] || return 0
+    for existing in "$@"; do
+        [[ ! -e "$AGENT_DIR/$existing" && ! -L "$AGENT_DIR/$existing" ]] || return 0
+    done
+    # noclobber also protects a config created concurrently by another launcher.
+    if ! (set -o noclobber; umask 077; cat -- "$SCRIPT_DIR/config/$filename" > "$AGENT_DIR/$filename") 2>/dev/null; then
+        [[ -e "$AGENT_DIR/$filename" || -L "$AGENT_DIR/$filename" ]] || die "could not seed $filename"
+    fi
+}
+
+add_overlay() {
+    local host="$1" container="$2"
+    [[ -f "$host" ]] || return 0
+    [[ -r "$host" ]] || die "unreadable overlay: $host"
+    CONFIG_FILES="${CONFIG_FILES:+$CONFIG_FILES:}$container"
+}
+
+prepare_display() {
+    DISPLAY_ARGS=()
+    local host_display="${OMPD_DISPLAY-${DISPLAY:-}}" xhost_bin xhost_display authority
+    case "$(uname -s)" in
+        Darwin)
+            if [[ -d /Applications/Utilities/XQuartz.app || -d /Applications/XQuartz.app ]]; then
+                /usr/bin/open -a XQuartz >/dev/null 2>&1 || true
+                xhost_bin="$(command -v xhost || true)"
+                [[ -n "$xhost_bin" || ! -x /opt/X11/bin/xhost ]] || xhost_bin=/opt/X11/bin/xhost
+                if [[ -n "$xhost_bin" ]]; then
+                    xhost_display="${DISPLAY:-:0}"
+                    DISPLAY="$xhost_display" "$xhost_bin" +127.0.0.1 >/dev/null 2>&1 || true
+                    DISPLAY="$xhost_display" "$xhost_bin" +localhost >/dev/null 2>&1 || true
+                fi
+            fi
+            if [[ ! ${OMPD_DISPLAY+x} ]]; then
+                case "$host_display" in
+                    ''|:*|/tmp/*|/private/tmp/*|/var/run/com.apple.launchd.*) host_display=host.docker.internal:0 ;;
+                esac
+            fi ;;
+        Linux)
+            if [[ -n "$host_display" && -d /tmp/.X11-unix ]]; then
+                DISPLAY_ARGS+=(--mount type=bind,source=/tmp/.X11-unix,target=/tmp/.X11-unix,readonly)
+            fi
+            if [[ -n "$host_display" && -n "${XAUTHORITY:-}" && -f "$XAUTHORITY" && -r "$XAUTHORITY" ]]; then
+                authority="$(CDPATH= cd -P -- "$(dirname -- "$XAUTHORITY")" && pwd)/$(basename -- "$XAUTHORITY")"
+                check_mount_path "$authority"
+                DISPLAY_ARGS+=(--mount "type=bind,source=$authority,target=/tmp/.docker.xauth,readonly" -e XAUTHORITY=/tmp/.docker.xauth)
+            fi ;;
+    esac
+    [[ -z "$host_display" ]] || DISPLAY_ARGS+=(-e "DISPLAY=$host_display")
+}
+
+cleanup() {
+    if [[ -n "${TTY_STATE:-}" && -t 0 ]]; then
+        stty "$TTY_STATE" 2>/dev/null || true
+    fi
+    if [[ "${USED_TTY:-false}" == true && -t 1 ]]; then
+        printf '\033[?1000l\033[?1002l\033[?1003l\033[?1004l\033[?1006l\033[?2004l\033[?25h\033[0m' >&2
+    fi
+}
+
+handle_signal() {
+    local signal="$1" status="$2"
+    # wait is interruptible, unlike a foreground external command in Bash.
+    trap '' INT TERM HUP
+    if [[ -n "${DOCKER_PID:-}" ]]; then
+        kill -s "$signal" "$DOCKER_PID" 2>/dev/null || true
+    fi
+    exit "$status"
+}
+
+main() {
+    parse_args "$@"
+    for tool in dirname readlink mkdir cat uname date; do
+        command -v "$tool" >/dev/null 2>&1 || die "required host tool '$tool' is missing; install it and retry"
+    done
+    resolve_script_dir
+    IMAGE_NAME="${OMPD_IMAGE:-ompd:latest}"
+    command -v docker >/dev/null 2>&1 || die "Docker is not installed or not on PATH. Install/start Docker, then run $SCRIPT_DIR/build."
+    docker info >/dev/null 2>&1 || die 'Docker daemon unavailable; start Docker/Docker Desktop and check context/socket permissions'
+    docker image inspect "$IMAGE_NAME" >/dev/null 2>&1 || die "image '$IMAGE_NAME' unavailable. Run $SCRIPT_DIR/build; or build/pull the custom OMPD_IMAGE tag."
+    CURRENT_DIR="$(pwd -P)"
+    check_mount_path "$CURRENT_DIR"
+    local basename="${CURRENT_DIR##*/}" digest
+    basename="${basename//[^A-Za-z0-9._-]/-}"
+    basename="${basename#-}"; basename="${basename%-}"
+    basename="${basename:-workspace}"
+    if command -v sha256sum >/dev/null 2>&1; then
+        digest="$(printf '%s' "$CURRENT_DIR" | sha256sum)"
+    elif command -v shasum >/dev/null 2>&1; then
+        digest="$(printf '%s' "$CURRENT_DIR" | shasum -a 256)"
+    else
+        die 'sha256sum or shasum is required'
+    fi
+    CONTAINER_WORKSPACE="/workspaces/$basename-${digest:0:12}"
+    CONTAINER_NAME="ompd-$(date +%Y%m%d-%H%M%S)-$$-$RANDOM"
+    [[ -f "$SCRIPT_DIR/config/config.yml" && -r "$SCRIPT_DIR/config/config.yml" ]] || die 'missing readable config/config.yml; restore the repository template'
+    check_mount_path "$SCRIPT_DIR/config"
+    CONFIG_MOUNTS=(--mount "type=bind,source=$SCRIPT_DIR/config,target=/config/ompd,readonly")
+    CONFIG_FILES=''
+    add_overlay "$SCRIPT_DIR/config/config.yml" /config/ompd/config.yml
+    add_overlay "$SCRIPT_DIR/config/config.local.yml" /config/ompd/config.local.yml
+    add_overlay "$SCRIPT_DIR/config/profiles/$SELECTED_PROFILE.yml" "/config/ompd/profiles/$SELECTED_PROFILE.yml"
+    prepare_data
+    prepare_display
+
+    local docker_args=(run -i) variable status
+    USED_TTY=false
+    if [[ -t 0 && -t 1 && "$MACHINE_MODE" == false ]]; then
+        docker_args+=(-t); USED_TTY=true
+        TTY_STATE="$(stty -g 2>/dev/null || true)"
+    fi
+    [[ "$DEBUG_MODE" == true ]] || docker_args+=(--rm)
+    docker_args+=(--init --entrypoint '' --name "$CONTAINER_NAME" --network host --shm-size=1g
+        --user coder --security-opt no-new-privileges:true --cap-drop ALL
+        --cap-add CHOWN --cap-add SETUID --cap-add SETGID
+        --mount "type=bind,source=$DATA_DIR,target=/home/coder"
+        --mount "type=bind,source=$CURRENT_DIR,target=$CONTAINER_WORKSPACE"
+        -w "$CONTAINER_WORKSPACE" -e HOME=/home/coder
+        -e PATH=/home/coder/.local/bin:/home/coder/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        -e "TERM=${TERM:-xterm-256color}" -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8
+        -e "OMP_PROFILE=$SELECTED_PROFILE" -e "PI_PROFILE=$SELECTED_PROFILE")
+    [[ -z "$CONFIG_FILES" ]] || docker_args+=(-e "PI_CONFIG_FILES=$CONFIG_FILES")
+    for variable in OPENAI_API_KEY OPENAI_CODEX_OAUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN GEMINI_API_KEY GOOGLE_API_KEY OPENROUTER_API_KEY GROQ_API_KEY MISTRAL_API_KEY XAI_API_KEY DEEPSEEK_API_KEY OLLAMA_API_KEY OLLAMA_HOST OLLAMA_BASE_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION AWS_DEFAULT_REGION AWS_PROFILE; do
+        if [[ ${!variable+x} ]]; then docker_args+=(-e "$variable"); fi
+    done
+    docker_args+=(${CONFIG_MOUNTS[@]+"${CONFIG_MOUNTS[@]}"} ${DISPLAY_ARGS[@]+"${DISPLAY_ARGS[@]}"} "$IMAGE_NAME" /usr/local/bin/omp ${OMP_ARGS[@]+"${OMP_ARGS[@]}"})
+    trap cleanup EXIT
+    trap 'handle_signal INT 130' INT
+    trap 'handle_signal TERM 143' TERM
+    trap 'handle_signal HUP 129' HUP
+    if [[ -z "${OMPD_NO_BANNER:-}" ]]; then
+        printf 'ompd: image=%s container=%s profile=%s\n  workspace: %s -> %s (read/write)\n  home: %s -> /home/coder\n' "$IMAGE_NAME" "$CONTAINER_NAME" "$SELECTED_PROFILE" "$CURRENT_DIR" "$CONTAINER_WORKSPACE" "$DATA_DIR" >&2
+    fi
+    if [[ "$DEBUG_MODE" == true ]]; then
+        printf 'Debug container: %s\n  docker logs %s\n  docker inspect %s\n  docker rm %s\n' "$CONTAINER_NAME" "$CONTAINER_NAME" "$CONTAINER_NAME" "$CONTAINER_NAME" >&2
+    fi
+    status=0
+    docker "${docker_args[@]}" <&0 &
+    DOCKER_PID=$!
+    wait "$DOCKER_PID" || status=$?
+    DOCKER_PID=''
+    [[ "$DEBUG_MODE" != true ]] || printf 'Docker exited with status %s; container %s retained if created.\n' "$status" "$CONTAINER_NAME" >&2
+    exit "$status"
+}
+
+main "$@"

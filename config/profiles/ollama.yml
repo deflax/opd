@@ -1,0 +1,4 @@
+# Requires this model to exist in your local Ollama instance. Customize as needed.
+# Built-in Ollama discovery uses OLLAMA_BASE_URL / OLLAMA_HOST, then localhost:11434.
+modelRoles:
+  default: ollama/gemma4:26b-16k

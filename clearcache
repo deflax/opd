@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() { printf 'clearcache: %s\n' "$*" >&2; exit 1; }
+SOURCE="${BASH_SOURCE[0]}"
+COUNT=0
+while [[ -L "$SOURCE" ]]; do
+    COUNT=$((COUNT + 1))
+    [[ $COUNT -le 40 ]] || die 'script symlink loop'
+    SCRIPT_DIR="$(CDPATH= cd -P -- "$(dirname -- "$SOURCE")" && pwd)"
+    SOURCE="$(readlink -- "$SOURCE")"
+    [[ "$SOURCE" == /* ]] || SOURCE="$SCRIPT_DIR/$SOURCE"
+done
+SCRIPT_DIR="$(CDPATH= cd -P -- "$(dirname -- "$SOURCE")" && pwd)"
+DRY_RUN=false
+for ARG in "$@"; do
+    case "$ARG" in
+        --dry-run) DRY_RUN=true ;;
+        -h|--help)
+            printf 'Usage: clearcache [--dry-run]\nRemoves only .cache contents under OMPD_DATA_DIR (default: repo/data).\nPreserves all .omp auth, settings, profiles and sessions, and all other files.\nStop containers first. Symlinked data/cache roots are refused; links within\n.cache are unlinked, never followed.\n'
+            exit 0 ;;
+        *) die "unknown argument: $ARG" ;;
+    esac
+done
+DATA_DIR="${OMPD_DATA_DIR:-$SCRIPT_DIR/data}"
+[[ "$DATA_DIR" == /* ]] || die 'OMPD_DATA_DIR must be absolute'
+[[ ! -L "$DATA_DIR" ]] || die 'refusing symlinked persistent home; no files removed'
+[[ -d "$DATA_DIR" ]] || { printf 'No persistent home; nothing to remove.\n'; exit 0; }
+DATA_DIR="$(CDPATH= cd -P -- "$DATA_DIR" && pwd)"
+[[ "$DATA_DIR" != / ]] || die 'refusing to clean /'
+shopt -s nullglob dotglob
+REMOVED=0
+for RELATIVE in .cache; do
+    CACHE="$DATA_DIR/$RELATIVE"
+    # Check every traversed component before listing anything. Never follow links.
+    [[ ! -L "$CACHE" ]] || die 'refusing symlinked .cache; no files removed'
+    [[ -d "$CACHE" ]] || continue
+    for TARGET in "$CACHE"/*; do
+        [[ ! -L "$DATA_DIR" && ! -L "$CACHE" && -d "$CACHE" ]] || die 'cache parent changed; stopping cleanup'
+        [[ "$TARGET" == "$CACHE/"* && "${TARGET%/*}" == "$CACHE" ]] || die 'unsafe cleanup target; stopping cleanup'
+        if [[ "$DRY_RUN" == true ]]; then
+            printf '[dry-run] remove %q\n' "$TARGET"
+        else
+            # rm unlinks nested symlinks; it does not traverse their destinations.
+            rm -rf -- "$TARGET"
+            printf 'removed %q\n' "$TARGET"
+        fi
+        REMOVED=$((REMOVED + 1))
+    done
+done
+printf '%s disposable cache item(s) %s. All .omp state preserved.\n' "$REMOVED" "$([[ "$DRY_RUN" == true ]] && printf 'would be removed' || printf 'removed')"

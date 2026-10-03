@@ -1,0 +1,44 @@
+# Repository and persistent runtime data must not enter the build context.
+.git
+data
+.data
+.home
+.omp
+.pi
+.ompd
+.ompd.*
+
+# Generated/local configuration and secrets.
+config
+.config
+ompd.conf
+ompd.env
+.env
+.env.*
+*.local
+*.local.*
+config.local*
+auth.json
+credentials.json
+*.pem
+*.key
+
+# Transient test/build output and caches.
+node_modules
+.cache
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.test-cache
+.test-data
+test-results
+playwright-report
+coverage
+tmp
+temp
+*.log
+*.tmp
+*.swp
+.DS_Store

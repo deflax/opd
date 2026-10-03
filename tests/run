@@ -1,0 +1,877 @@
+#!/usr/bin/env python3
+"""Hermetic behavioral checks; Docker is replaced with an argv/env recorder."""
+
+import json
+import os
+from pathlib import Path
+import pty
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import termios
+import time
+import unittest
+
+
+SOURCE = Path(__file__).resolve().parents[1]
+MOCK = r'''#!/usr/bin/env python3
+import json, os, pathlib, signal, sys, time, tty
+root = pathlib.Path(os.environ['MOCK_DOCKER_LOG'])
+root.mkdir(parents=True, exist_ok=True)
+number = len(list(root.glob('*.args')))
+stem = root / str(number)
+stem.with_suffix('.args').write_bytes(b'\0'.join(os.fsencode(a) for a in sys.argv[1:]) + b'\0')
+stem.with_suffix('.json').write_text(json.dumps({'env': dict(os.environ), 'cwd': os.getcwd()}))
+args = sys.argv[1:]
+daemon_status = int(os.environ.get('MOCK_DOCKER_DAEMON_STATUS', '0'))
+image_status = int(os.environ.get('MOCK_DOCKER_IMAGE_STATUS', '0'))
+if daemon_status:
+    sys.stderr.write('Cannot connect to the Docker daemon; is it running?\n')
+    sys.exit(daemon_status)
+if image_status and (args[:2] == ['image', 'inspect'] or args[:1] == ['inspect']):
+    sys.stderr.write('Error response from daemon: No such image: ompd:latest\n')
+    sys.exit(image_status)
+if args[:1] == ['run']:
+    if 'MOCK_DOCKER_STDOUT' in os.environ:
+        sys.stdout.write(os.environ['MOCK_DOCKER_STDOUT'])
+        sys.stdout.flush()
+    if 'MOCK_DOCKER_WAIT' in os.environ:
+        def received(number, frame):
+            (root / 'signal').write_text(str(number))
+            sys.exit(128 + number)
+        for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(number, received)
+        if os.isatty(0):
+            tty.setraw(0)
+        (root / 'ready').write_text(str(os.getpid()))
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            time.sleep(0.01)
+        sys.exit(98)
+sys.exit(int(os.environ.get('MOCK_DOCKER_STATUS', '0')) if args[:1] == ['run'] else 0)
+'''
+
+
+def values(args, *names):
+    """Accept equivalent long and short Docker option spellings."""
+    result = []
+    for index, arg in enumerate(args):
+        if arg in names and index + 1 < len(args):
+            result.append(args[index + 1])
+        else:
+            for name in names:
+                if arg.startswith(name + '='):
+                    result.append(arg[len(name) + 1:])
+    return result
+
+
+def mounts(args):
+    result = {}
+    for volume in values(args, '-v', '--volume'):
+        parts = volume.split(':')
+        if len(parts) >= 2:
+            result[parts[1]] = Path(parts[0])
+    for mount in values(args, '--mount'):
+        fields = dict(part.split('=', 1) for part in mount.split(',') if '=' in part)
+        source = fields.get('source', fields.get('src'))
+        target = fields.get('target', fields.get('dst', fields.get('destination')))
+        if source and target:
+            result[target] = Path(source)
+    return result
+
+
+def tree_metadata(root):
+    """Check real data stays untouched without reading credentials or following links."""
+    if not root.exists() and not root.is_symlink():
+        return None
+    paths = [root]
+    if root.is_dir() and not root.is_symlink():
+        for directory, dirs, files in os.walk(root, followlinks=False):
+            paths.extend(Path(directory) / name for name in dirs + files)
+    result = {}
+    for path in paths:
+        stat = path.lstat()
+        result[str(path.relative_to(root))] = (
+            stat.st_mode, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns,
+            os.readlink(path) if path.is_symlink() else None,
+        )
+    return result
+
+
+class LauncherTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Copy the source once. Never execute against the real repository or HOME.
+        cls.original_data = tree_metadata(SOURCE / 'data')
+        preferred = Path('/tmp/opencode')
+        temp_root = (str(preferred) if preferred.is_dir() and
+                     os.access(preferred, os.W_OK | os.X_OK) else tempfile.gettempdir())
+        cls.suite = tempfile.TemporaryDirectory(prefix='ompd-tests-', dir=temp_root)
+        cls.root = Path(cls.suite.name)
+        cls.snapshot = cls.root / 'snapshot'
+        shutil.copytree(SOURCE, cls.snapshot,
+                        ignore=shutil.ignore_patterns(
+                            '.git', 'data', 'tests', '__pycache__', '*.local.*',
+                            '.env', '.env.*', 'models.yml', 'models.yaml', 'mcp.json',
+                            'key', '.key', 'keys', '.keys', '*.key', '*.pem',
+                            'secrets', '.secrets', 'credentials', '.omp', '.pi',
+                            '.ssh', '.gnupg', '.aws', '.azure'))
+        cls.bin = cls.root / 'bin'
+        cls.bin.mkdir()
+        docker = cls.bin / 'docker'
+        docker.write_text(MOCK)
+        docker.chmod(0o755)
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            if tree_metadata(SOURCE / 'data') != cls.original_data:
+                raise AssertionError('Real repository data changed during the hermetic tests')
+        finally:
+            cls.suite.cleanup()
+
+    def setUp(self):
+        self.case = Path(tempfile.mkdtemp(prefix='case-', dir=self.root))
+        self.repo = self.case / 'repo'
+        shutil.copytree(self.snapshot, self.repo)
+        self.home = self.case / 'host-home'
+        self.home.mkdir()
+        self.cwd = self.case / 'project space;$HOME'
+        self.cwd.mkdir()
+        self.log = self.case / 'docker-log'
+        self.env = {
+            'PATH': str(self.bin) + os.pathsep + os.defpath,
+            'HOME': str(self.home), 'USER': 'test-user', 'LOGNAME': 'test-user',
+            'LANG': 'C.UTF-8', 'TERM': 'dumb',
+            'MOCK_DOCKER_LOG': str(self.log),
+        }
+
+    def invoke(self, *args, script='pi', cwd=None, env=None):
+        path = self.repo / script
+        self.assertTrue(path.is_file(), f'Missing required executable: {script}')
+        self.assertTrue(os.access(path, os.X_OK), f'{script} must be executable')
+        return subprocess.run([str(path), *args], cwd=cwd or self.cwd,
+                              env={**self.env, **(env or {})}, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+
+    def calls(self):
+        if not self.log.exists():
+            return []
+        result = []
+        for path in sorted(self.log.glob('*.args'), key=lambda p: int(p.stem)):
+            args = [os.fsdecode(a) for a in path.read_bytes().split(b'\0')[:-1]]
+            result.append((args, json.loads(path.with_suffix('.json').read_text())))
+        return result
+
+    def invoke_tty(self, *args, env=None, send_signal=None):
+        """Use a real PTY, with bounded waits and isolated child cleanup."""
+        master, slave = pty.openpty()
+        process = None
+        before = termios.tcgetattr(slave)
+        try:
+            process = subprocess.Popen(
+                [str(self.repo / 'pi'), *args], cwd=self.cwd,
+                env={**self.env, **(env or {})}, stdin=slave, stdout=slave,
+                stderr=subprocess.PIPE, start_new_session=True)
+            if send_signal is not None:
+                deadline = time.monotonic() + 5
+                while not (self.log / 'ready').exists():
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        self.fail('Mock Docker did not become ready for the signal test')
+                    time.sleep(0.01)
+                os.kill(process.pid, send_signal)
+            _, stderr = process.communicate(timeout=10)
+            after = termios.tcgetattr(slave)
+            if send_signal is not None:
+                # The wrapper may exit before its signalled child handles the
+                # signal; allow that handler to record evidence before cleanup.
+                deadline = time.monotonic() + 2
+                while not (self.log / 'signal').exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            os.set_blocking(master, False)
+            stdout = b''
+            while True:
+                try:
+                    chunk = os.read(master, 65536)
+                except BlockingIOError:
+                    break
+                if not chunk:
+                    break
+                stdout += chunk
+            return subprocess.CompletedProcess(process.args, process.returncode,
+                                               stdout, stderr), before, after
+        finally:
+            if process is not None:
+                # Also reap a mock that outlives a signalled wrapper on failure.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
+            os.close(master)
+            os.close(slave)
+
+    def run_call(self):
+        calls = [(args, record) for args, record in self.calls() if args[:1] == ['run']]
+        self.assertEqual(len(calls), 1, 'Expected exactly one docker run')
+        return calls[0]
+
+    def reset_log(self):
+        if self.log.exists():
+            shutil.rmtree(self.log)
+
+    def launch(self, *args, **kwargs):
+        result = self.invoke(*args, **kwargs)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+        self.assertEqual(result.stdout, b'', 'Wrapper diagnostics must not pollute stdout')
+        return self.run_call()[0]
+
+    def agent(self, profile=None):
+        omp = self.repo / 'data' / '.omp'
+        return omp / ('profiles/' + profile + '/agent' if profile else 'agent')
+
+    def seeded_config(self, profile=None):
+        agent = self.agent(profile)
+        candidates = [agent / name for name in ('config.yml', 'config.yaml', 'settings.json')]
+        present = [path for path in candidates if path.is_file()]
+        self.assertTrue(present, f'Profile was not seeded: {agent}')
+        return present[0]
+
+    def test_help_never_calls_docker(self):
+        result = self.invoke('--pi-help')
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b'--pi-', result.stdout + result.stderr)
+        self.assertNotIn(b'--pi-web', result.stdout + result.stderr)
+        self.assertNotIn(b'--pi-port', result.stdout + result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_unknown_web_port_arguments_forward_without_wrapper_effects(self):
+        scenarios = [['--pi-web'], ['--pi-web=value'],
+                     ['--pi-port', '8080'], ['--pi-port=8080']]
+        for args in scenarios:
+            for separator in ([], ['--']):
+                with self.subTest(args=args, separator=separator):
+                    self.reset_log()
+                    call = self.launch(*separator, *args)
+                    command = call.index('/usr/local/bin/omp')
+                    self.assertEqual(call[command + 1:], args)
+                    docker_options = call[:call.index('ompd:latest')]
+                    self.assertIn('--rm', docker_options)
+                    self.assertEqual(values(docker_options, '--network'), ['host'])
+                    self.assertFalse(any(
+                        arg in ('-p', '-P', '--publish', '--publish-all') or
+                        arg.startswith(('--publish=', '--publish-all=', '-p8080'))
+                        for arg in docker_options), 'No port publication may be invented')
+
+    def test_literal_arguments_after_separator(self):
+        args = ['space argument', '', '$HOME', '$(touch should-not-exist)',
+                '*.py', 'line\nbreak', 'quote\"single\'', '--pi-debug']
+        call = self.launch('--', *args)
+        image = call.index('ompd:latest')
+        self.assertEqual(Path(call[image + 1]).name, 'omp')
+        self.assertEqual(call[image + 2:], args)
+        self.assertFalse((self.cwd / 'should-not-exist').exists())
+        self.assertIn('--rm', call, 'A literal --pi-debug must not change wrapper options')
+
+    def test_image_mounts_security_and_non_tty(self):
+        call = self.launch()
+        command = call[call.index('ompd:latest') + 1:]
+        self.assertEqual(len(command), 1)
+        self.assertEqual(Path(command[0]).name, 'omp')
+        mounted = mounts(call)
+        self.assertEqual(mounted.get('/home/coder'), self.repo / 'data')
+        workdir = values(call, '-w', '--workdir')
+        self.assertEqual(len(workdir), 1)
+        self.assertRegex(workdir[0], r'^/workspaces/[A-Za-z0-9._-]+-[0-9a-f]{12}$')
+        self.assertEqual(mounted.get(workdir[0]), self.cwd.resolve())
+        self.assertEqual(values(call, '--network'), ['host'])
+        self.assertIn('--init', call)
+        self.assertEqual([v.lower() for v in values(call, '--shm-size')], ['1g'])
+        security = values(call, '--security-opt')
+        self.assertTrue(any(v in ('no-new-privileges', 'no-new-privileges:true',
+                                  'no-new-privileges=true') for v in security))
+        self.assertEqual([v.upper() for v in values(call, '--cap-drop')], ['ALL'])
+        self.assertEqual({v.upper() for v in values(call, '--cap-add')},
+                         {'CHOWN', 'SETUID', 'SETGID'})
+        self.assertTrue('-i' in call or '--interactive' in call)
+        self.assertFalse(any(v in ('-t', '-it', '-ti', '--tty') or
+                             v.startswith('--tty=') for v in call))
+
+    def test_workdir_canonical_stable_and_distinct(self):
+        first = self.launch()
+        original = values(first, '-w', '--workdir')
+        self.reset_log()
+        alias = self.case / 'alias'
+        alias.symlink_to(self.cwd, target_is_directory=True)
+        second = self.launch(cwd=alias, env={'PWD': str(alias)})
+        self.assertEqual(values(second, '-w', '--workdir'), original)
+        self.reset_log()
+        other = self.case / 'other' / self.cwd.name
+        other.mkdir(parents=True)
+        third = self.launch(cwd=other)
+        self.assertNotEqual(values(third, '-w', '--workdir'), original)
+
+    def test_debug_status_and_diagnostics(self):
+        result = self.invoke('--pi-debug', env={'MOCK_DOCKER_STATUS': '37'})
+        self.assertEqual(result.returncode, 37)
+        self.assertEqual(result.stdout, b'')
+        self.assertTrue(result.stderr, 'Debug diagnostics should go to stderr')
+        call, _ = self.run_call()
+        self.assertNotIn('--rm', call)
+        self.assertNotIn('--pi-debug', call)
+
+    def test_protocol_modes_suppress_tty_on_actual_terminal(self):
+        scenarios = [[], ['acp'], ['--profile', 'work', 'acp'],
+                     ['--model', 'model-name', 'acp'], ['--approval-mode=yolo', 'acp'],
+                     ['--print', 'prompt'], ['-p', 'prompt'],
+                     ['--mode', 'rpc'], ['--mode=rpc'],
+                     ['--mode', 'json'], ['--mode=json'],
+                     ['--mode', 'acp'], ['--mode=acp']]
+        for args in scenarios:
+            with self.subTest(args=args):
+                self.reset_log()
+                result, before, after = self.invoke_tty(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, b'')
+                call, _ = self.run_call()
+                self.assertIn('-i', call)
+                self.assertEqual('-t' in call, not args)
+                self.assertEqual(before, after)
+                self.assertEqual(call[call.index('/usr/local/bin/omp') + 1:], args)
+
+    def test_stdout_and_docker_status_pass_through(self):
+        payload = '{"response":"native output"}\nsecond line\n'
+        for args in (['--print', 'prompt'], ['--mode', 'rpc'], ['acp']):
+            with self.subTest(args=args):
+                self.reset_log()
+                result = self.invoke(*args, env={'MOCK_DOCKER_STDOUT': payload,
+                                                'MOCK_DOCKER_STATUS': '37'})
+                self.assertEqual(result.returncode, 37)
+                self.assertEqual(result.stdout, payload.encode())
+                self.run_call()
+
+    def test_signals_forward_status_and_restore_terminal(self):
+        for number, status in ((signal.SIGINT, 130), (signal.SIGTERM, 143),
+                               (signal.SIGHUP, 129)):
+            with self.subTest(signal=number):
+                self.reset_log()
+                result, before, after = self.invoke_tty(
+                    env={'MOCK_DOCKER_WAIT': '1'}, send_signal=number)
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertEqual(result.stdout, b'')
+                self.assertEqual(before, after, 'Wrapper must restore modified terminal flags')
+                self.assertIn(b'\x1b[?25h', result.stderr)
+                self.assertTrue((self.log / 'signal').exists(), 'Docker never received signal')
+                self.assertEqual((self.log / 'signal').read_text(), str(number))
+                call, _ = self.run_call()
+                self.assertIn('-t', call)
+
+    def test_missing_image_fails_before_run_with_build_advice(self):
+        result = self.invoke(env={'MOCK_DOCKER_IMAGE_STATUS': '43'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b'')
+        self.assertIn(b'build', result.stderr.lower(), 'Explain how to build the missing image')
+        self.assertFalse(any(args[:1] == ['run'] for args, _ in self.calls()))
+
+    def test_unavailable_daemon_fails_before_run_with_actionable_message(self):
+        result = self.invoke(env={'MOCK_DOCKER_DAEMON_STATUS': '44'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b'')
+        message = result.stderr.lower()
+        self.assertIn(b'docker', message)
+        self.assertIn(b'daemon', message)
+        self.assertTrue(any(word in message for word in (b'start', b'running', b'connect')),
+                        'Explain how to resolve the unavailable daemon')
+        self.assertFalse(any(args[:1] == ['run'] for args, _ in self.calls()))
+
+    def test_base_config_seeded_once_default_and_named(self):
+        base = self.repo / 'config' / 'config.yml'
+        content = base.read_bytes()
+        # Check this small canonical YAML as text, not upstream runtime parsing.
+        settings = [line for line in content.decode().splitlines()
+                    if line.strip() and not line.lstrip().startswith('#')]
+        self.assertEqual(settings, ['task:', '  maxConcurrency: 4'])
+        for profile in (None, 'seeded-native'):
+            with self.subTest(profile=profile):
+                args = ['--pi-profile', profile] if profile else []
+                self.reset_log()
+                call = self.launch(*args)
+                config = self.seeded_config(profile)
+                self.assertEqual(config.read_bytes(), content)
+                self.assertIn('PI_CONFIG_FILES=/config/ompd/config.yml',
+                              values(call, '-e', '--env'))
+                self.assertEqual(mounts(call).get('/config/ompd'), base.parent)
+                customized = b'task:\n  maxConcurrency: 2\n'
+                config.write_bytes(customized)
+                self.reset_log()
+                call = self.launch(*args)
+                self.assertEqual(config.read_bytes(), customized)
+                self.assertEqual(base.read_bytes(), content)
+                self.assertIn('PI_CONFIG_FILES=/config/ompd/config.yml',
+                              values(call, '-e', '--env'))
+
+    def test_wrapper_named_profile(self):
+        call = self.launch('--pi-profile', 'work')
+        self.seeded_config('work')
+        self.assertNotIn('--pi-profile', call)
+        self.assertFalse(self.agent().exists(), 'Named profile must not seed the default agent')
+
+    def test_native_named_profile(self):
+        call = self.launch('--profile', 'work')
+        self.seeded_config('work')
+        self.assertIn('--profile', call)
+        profile_index = call.index('--profile')
+        self.assertEqual(call[profile_index + 1], 'work')
+
+    def test_environment_named_profile(self):
+        self.launch(env={'PI_PROFILE': 'environment'})
+        self.seeded_config('environment')
+        self.assertFalse(self.agent().exists())
+
+    def test_last_native_profile_and_environment_precedence(self):
+        scenarios = [
+            (['--profile', 'first', '--profile=last'],
+             {'OMP_PROFILE': 'omp-env', 'PI_PROFILE': 'pi-env', 'OMPD_PROFILE': 'fallback'}, 'last'),
+            (['--profile=first', '--profile', 'last'],
+             {'OMP_PROFILE': 'omp-env', 'PI_PROFILE': 'pi-env'}, 'last'),
+            ([], {'OMP_PROFILE': 'omp-env', 'PI_PROFILE': 'pi-env', 'OMPD_PROFILE': 'fallback'}, 'omp-env'),
+            ([], {'PI_PROFILE': 'pi-env', 'OMPD_PROFILE': 'fallback'}, 'pi-env'),
+            ([], {'OMPD_PROFILE': 'fallback'}, 'fallback'),
+            (['--pi-profile', 'wrapper'],
+             {'OMP_PROFILE': 'omp-env', 'PI_PROFILE': 'pi-env'}, 'wrapper'),
+            (['--pi-profile', 'last', '--profile', 'first', '--profile=last'], {}, 'last'),
+        ]
+        for args, env, expected in scenarios:
+            with self.subTest(args=args, env=env):
+                self.reset_log()
+                omp = self.repo / 'data' / '.omp'
+                if omp.exists():
+                    shutil.rmtree(omp)
+                call = self.launch(*args, env=env)
+                assignments = dict(item.split('=', 1) for item in values(call, '-e', '--env')
+                                   if '=' in item)
+                self.assertEqual(assignments['OMP_PROFILE'], expected)
+                self.assertEqual(assignments['PI_PROFILE'], expected)
+                self.seeded_config(expected)
+                self.assertEqual(sorted((omp / 'profiles').iterdir()),
+                                 [omp / 'profiles' / expected])
+
+    def test_profile_normalization_and_defined_empty_precedence(self):
+        scenarios = [
+            ([], {'OMP_PROFILE': '', 'PI_PROFILE': 'legacy', 'OMPD_PROFILE': 'fallback'}, 'default'),
+            ([], {'OMP_PROFILE': ' \t\n', 'PI_PROFILE': 'legacy'}, 'default'),
+            ([], {'PI_PROFILE': '', 'OMPD_PROFILE': 'fallback'}, 'default'),
+            ([], {'OMPD_PROFILE': ''}, 'default'),
+            ([], {'OMP_PROFILE': 'default', 'PI_PROFILE': 'legacy'}, 'default'),
+            ([], {'OMP_PROFILE': ' \twork\r\n '}, 'work'),
+            ([], {'PI_PROFILE': ' work '}, 'work'),
+            ([], {'OMPD_PROFILE': ' work '}, 'work'),
+            (['--pi-profile', ''], {'OMP_PROFILE': 'environment'}, 'default'),
+            (['--pi-profile', ' \t '], {'OMP_PROFILE': 'environment'}, 'default'),
+            (['--profile', ' \t '], {'OMP_PROFILE': 'environment'}, 'default'),
+            (['--profile= default '], {'OMP_PROFILE': 'environment'}, 'default'),
+            (['--pi-profile', ' work ', '--profile', '\twork\n'], {}, 'work'),
+            (['--pi-profile', '', '--profile', 'default'], {}, 'default'),
+            (['--profile', 'INVALID', '--profile=work'], {}, 'work'),
+            (['--profile=first', '--profile', 'default'], {'OMP_PROFILE': 'environment'}, 'default'),
+        ]
+        for args, env, expected in scenarios:
+            with self.subTest(args=args, env=env):
+                self.reset_log()
+                omp = self.repo / 'data' / '.omp'
+                if omp.exists():
+                    shutil.rmtree(omp)
+                call = self.launch(*args, env=env)
+                assignments = dict(item.split('=', 1) for item in values(call, '-e', '--env')
+                                   if '=' in item)
+                self.assertEqual(assignments['OMP_PROFILE'], expected)
+                self.assertEqual(assignments['PI_PROFILE'], expected)
+                self.seeded_config(None if expected == 'default' else expected)
+                if expected == 'default':
+                    self.assertFalse((omp / 'profiles').exists())
+
+    def test_profile_scanner_respects_native_values_and_command_boundaries(self):
+        scenarios = [
+            (['--system-prompt', '--profile', 'foo'], 'default'),
+            (['--print', '--system-prompt', '--profile', 'foo'], 'default'),
+            (['--config', '--profile=ignored', '--profile', 'work'], 'work'),
+            (['--system-prompt=--profile', '--profile=work'], 'work'),
+            (['--resume', '--profile', 'work'], 'work'),
+            (['--session', '', '--profile=work'], 'work'),
+            (['-r', 'session', '--profile', 'work'], 'work'),
+            (['--plan', '--profile', 'work'], 'work'),
+            (['--plan', 'model', '--profile=work'], 'work'),
+            (['--custom-ext', 'value', '--profile=work'], 'work'),
+            (['--custom-ext', '--profile=work'], 'work'),
+            (['--print', '--profile=work'], 'work'),
+            (['--alias', '--profile'], None),
+            (['--alias', 'grep', '--profile=work'], 'work'),
+            (['--alias=grep', '--profile=work'], 'work'),
+            (['--profile=work', 'grep', '--profile', '../path'], 'work'),
+            (['grep', '--profile', '../path'], 'default'),
+            (['img', '--profile', '../path'], 'default'),
+            (['plugins', '--profile=../path'], 'default'),
+            (['wt', '--profile'], 'default'),
+            (['launch', '--profile', 'first', '--profile=work'], 'work'),
+            (['acp', '--profile', 'first', '--profile=work'], 'work'),
+            (['--profile=first', 'acp', '--profile=work'], 'work'),
+            # Bootstrap stops only at a FIRST residual command, not a later
+            # command-looking prompt or a hoisted command behind launch flags.
+            (['prompt', 'grep', '--profile=work'], 'work'),
+            (['--no-ui', 'grep', '--profile=work'], 'work'),
+            (['--profile=work', '--', '--profile', '../literal'], 'work'),
+            (['--', '--profile', '../literal'], 'default'),
+        ]
+        for args, expected in scenarios:
+            with self.subTest(args=args):
+                self.reset_log()
+                omp = self.repo / 'data' / '.omp'
+                if omp.exists():
+                    shutil.rmtree(omp)
+                if expected is None:
+                    result = self.invoke('--', *args)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(self.calls(), [])
+                    continue
+                call = self.launch('--', *args)
+                self.assertEqual(call[call.index('/usr/local/bin/omp') + 1:], args)
+                assignments = dict(item.split('=', 1) for item in values(call, '-e', '--env')
+                                   if '=' in item)
+                self.assertEqual(assignments['OMP_PROFILE'], expected)
+                self.seeded_config(None if expected == 'default' else expected)
+
+    def test_machine_scanner_skips_native_values_and_command_owned_flags(self):
+        scenarios = [
+            ['--system-prompt', '--print', 'prompt'],
+            ['--system-prompt', '--mode=rpc', 'prompt'],
+            ['--config', '-p', 'prompt'],
+            ['--model', 'acp'],
+            ['--custom-ext', 'acp'],
+            ['prompt', 'acp'],
+            ['--help', 'acp'],
+            ['-h', 'acp'],
+            ['--version', 'acp'],
+            ['help', 'acp'],
+            ['grep', '--print', '--mode=rpc'],
+            ['img', '--mode', 'rpc'],
+            ['--no-ui', 'grep', '--mode=rpc'],
+            ['--print', 'grep', '--profile', 'work'],
+            ['--', '--print', '--mode=rpc', 'acp'],
+        ]
+        for args in scenarios:
+            with self.subTest(args=args):
+                self.reset_log()
+                result, before, after = self.invoke_tty('--', *args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, b'')
+                self.assertEqual(before, after)
+                call, _ = self.run_call()
+                self.assertIn('-t', call, 'Value text and subcommand flags are not machine launch flags')
+                self.assertEqual(call[call.index('/usr/local/bin/omp') + 1:], args)
+
+    def test_native_profile_conflicts_use_native_or_reject_explicitly(self):
+        scenarios = [
+            (['--pi-profile', 'wrapper', '--profile', 'native'], {}),
+            (['--profile', 'native', '--pi-profile', 'wrapper'], {}),
+            (['--profile', 'native'], {'PI_PROFILE': 'environment'}),
+            (['--pi-profile', 'wrapper', '--profile', 'native'],
+             {'PI_PROFILE': 'environment'}),
+        ]
+        for args, env in scenarios:
+            with self.subTest(args=args, env=env):
+                omp = self.repo / 'data' / '.omp'
+                if omp.exists():
+                    shutil.rmtree(omp)
+                self.reset_log()
+                result = self.invoke(*args, env=env)
+                self.assertEqual(result.stdout, b'')
+                if result.returncode:
+                    self.assertIn(b'profile', result.stderr.lower(),
+                                  'Conflicting profiles must be rejected explicitly')
+                    self.assertFalse(any(call[:1] == ['run'] for call, _ in self.calls()))
+                    for profile in (None, 'native', 'wrapper', 'environment'):
+                        self.assertFalse(self.agent(profile).exists(),
+                                         'Rejected selection must not silently seed a profile')
+                else:
+                    call, _ = self.run_call()
+                    self.seeded_config('native')
+                    self.assertEqual(values(call, '--profile'), ['native'])
+                    self.assertNotIn('--pi-profile', call)
+                    for profile in (None, 'wrapper', 'environment'):
+                        self.assertFalse(self.agent(profile).exists(),
+                                         'Native profile must win over conflicting selectors')
+
+    def test_wrapper_profile_overrides_environment_or_rejects(self):
+        result = self.invoke('--pi-profile', 'wrapper', env={'PI_PROFILE': 'environment'})
+        self.assertEqual(result.stdout, b'')
+        if result.returncode:
+            self.assertIn(b'profile', result.stderr.lower())
+            self.assertFalse(any(call[:1] == ['run'] for call, _ in self.calls()))
+            self.assertFalse(self.agent('wrapper').exists())
+        else:
+            self.run_call()
+            self.seeded_config('wrapper')
+        self.assertFalse(self.agent('environment').exists())
+        self.assertFalse(self.agent().exists())
+
+    def test_local_then_profile_config_overlays(self):
+        config = self.repo / 'config'
+        profiles = config / 'profiles'
+        profiles.mkdir(parents=True, exist_ok=True)
+        local = config / 'config.local.yml'
+        named = profiles / 'overlaid.yml'
+        local.write_text('test_local_overlay: true\n')
+        named.write_text('test_named_overlay: true\n')
+        call = self.launch('--pi-profile', 'overlaid')
+        base = config / 'config.yml'
+        self.assertEqual(self.seeded_config('overlaid').read_bytes(), base.read_bytes())
+        _, record = self.run_call()
+        env_args = values(call, '-e', '--env')
+        assignments = dict(item.split('=', 1) for item in env_args if '=' in item)
+        files = assignments.get('PI_CONFIG_FILES')
+        if files is None and 'PI_CONFIG_FILES' in env_args:
+            files = record['env'].get('PI_CONFIG_FILES')
+        self.assertTrue(files, 'Overlays must use native PI_CONFIG_FILES')
+        # Accept common native path-list separators without coupling to mount names.
+        import re
+        paths = [part.strip() for part in re.split(r'[,;:]', files) if part.strip()]
+        mounted = mounts(call)
+        resolved = []
+        for path in paths:
+            for target in sorted(mounted, key=len, reverse=True):
+                if path == target or path.startswith(target.rstrip('/') + '/'):
+                    resolved.append(mounted[target] / path[len(target):].lstrip('/'))
+                    break
+            else:
+                self.fail(f'Config overlay is not available through a bind mount: {path}')
+        self.assertEqual(resolved, [base, local, named],
+                         'Pass base, local, then named profile overlays to native omp')
+        for path in resolved:
+            self.assertTrue(path.is_file(), f'Missing overlay: {path}')
+
+    def test_existing_config_formats_are_preserved(self):
+        for name in ('config.yml', 'config.yaml', 'settings.json'):
+            with self.subTest(name=name):
+                agent = self.agent('keep')
+                if agent.exists():
+                    shutil.rmtree(agent)
+                agent.mkdir(parents=True)
+                config = agent / name
+                content = b'{"test_sentinel": "preserve-me"}\n'
+                config.write_bytes(content)
+                self.reset_log()
+                self.launch('--pi-profile', 'keep')
+                self.assertEqual(config.read_bytes(), content)
+                self.assertEqual(sorted(p.name for p in agent.iterdir()
+                                        if p.name in ('config.yml', 'config.yaml', 'settings.json')),
+                                 [name], 'Do not seed a competing config over existing settings')
+
+    def test_rejects_profile_traversal_before_docker(self):
+        for flag in ('--profile', '--pi-profile'):
+            for name in ('../escape', '/tmp/escape', 'nested/name', '..'):
+                with self.subTest(flag=flag, name=name):
+                    self.reset_log()
+                    result = self.invoke(flag, name)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(self.calls(), [])
+                    self.assertTrue(result.stderr)
+
+    def test_valid_profile_names(self):
+        for flag in ('--profile', '--pi-profile'):
+            for name in ('work', 'work.v2', 'work_-2', '0', 'a' * 64):
+                with self.subTest(flag=flag, name=name):
+                    self.reset_log()
+                    self.launch(flag, name)
+                    self.seeded_config(name)
+
+    def test_rejects_non_native_profile_names_before_docker(self):
+        invalid = ['_work', '-work', '.work', 'Work', 'work.', 'a' * 65,
+                   'work space', 'work/other', 'con', 'con.txt', 'prn', 'prn.txt',
+                   'aux', 'aux.txt', 'nul', 'nul.txt',
+                   *[f'com{digit}' for digit in range(10)],
+                   *[f'com{digit}.suffix' for digit in range(10)],
+                   *[f'lpt{digit}' for digit in range(10)],
+                   *[f'lpt{digit}.suffix' for digit in range(10)]]
+        for name in invalid:
+            for selector in ('--profile', '--pi-profile', 'OMP_PROFILE', 'PI_PROFILE', 'OMPD_PROFILE'):
+                with self.subTest(name=name, selector=selector):
+                    self.reset_log()
+                    args = [selector, name] if selector.startswith('--') else []
+                    env = {} if args else {selector: name}
+                    result = self.invoke(*args, env=env)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(b'profile', result.stderr.lower())
+                    self.assertEqual(result.stdout, b'')
+                    self.assertEqual(self.calls(), [])
+
+    def test_missing_or_empty_native_profile_values(self):
+        for args in (['--profile'], ['--profile', ''], ['--profile='],
+                     ['--profile', '--print']):
+            with self.subTest(args=args):
+                result = self.invoke(*args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b'profile', result.stderr.lower())
+                self.assertEqual(self.calls(), [])
+
+    def test_allowlisted_env_forwarded_without_values(self):
+        sentinels = {'ANTHROPIC_API_KEY': 'anthropic-secret-never-in-argv',
+                     'OPENAI_API_KEY': 'openai-secret-never-in-argv',
+                     'OPENAI_CODEX_OAUTH_TOKEN': 'codex-oauth-never-in-argv',
+                     'UNRELATED_PRIVATE_TOKEN': 'unrelated-secret-never-forwarded'}
+        call = self.launch(env=sentinels)
+        forwarded = values(call, '-e', '--env')
+        self.assertIn('ANTHROPIC_API_KEY', forwarded)
+        self.assertIn('OPENAI_API_KEY', forwarded)
+        self.assertIn('OPENAI_CODEX_OAUTH_TOKEN', forwarded)
+        self.assertFalse(any(v.split('=', 1)[0] == 'UNRELATED_PRIVATE_TOKEN' for v in forwarded))
+        self.assertFalse(any(secret in arg for secret in sentinels.values() for arg in call))
+        _, record = self.run_call()
+        for key, value in sentinels.items():
+            self.assertEqual(record['env'].get(key), value)
+
+    def test_symlinked_launcher_uses_real_repository(self):
+        link = self.case / 'launcher-link'
+        link.symlink_to(self.repo / 'pi')
+        chained = self.case / 'launcher-chain'
+        chained.symlink_to(link.name)
+        call = self.launch(script=str(chained))
+        self.assertEqual(mounts(call).get('/home/coder'), self.repo / 'data')
+
+    def test_symlinked_agent_state_refused_without_seeding_outside(self):
+        for relative, profile in (('.omp', None), ('.omp/agent', None),
+                                  ('.omp/profiles', 'work'),
+                                  ('.omp/profiles/work', 'work'),
+                                  ('.omp/profiles/work/agent', 'work')):
+            with self.subTest(relative=relative):
+                self.reset_log()
+                data = self.repo / 'data'
+                if data.exists():
+                    shutil.rmtree(data)
+                outside = self.case / ('outside-' + relative.replace('/', '-'))
+                outside.mkdir()
+                sentinel = outside / 'sentinel'
+                sentinel.write_bytes(b'outside state must survive\n')
+                linked = data / relative
+                linked.parent.mkdir(parents=True)
+                linked.symlink_to(outside, target_is_directory=True)
+                result = self.invoke(*(['--pi-profile', profile] if profile else []))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b'symlink', result.stderr.lower())
+                self.assertEqual(result.stdout, b'')
+                self.assertFalse(any(args[:1] == ['run'] for args, _ in self.calls()))
+                self.assertEqual(list(outside.iterdir()), [sentinel])
+                self.assertEqual(sentinel.read_bytes(), b'outside state must survive\n')
+
+    def test_build_host_identity_and_literal_args(self):
+        result = self.invoke('--label', 'value with spaces;$HOME', script='build')
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+        calls = [args for args, _ in self.calls() if args[:1] == ['build']]
+        self.assertEqual(len(calls), 1)
+        call = calls[0]
+        self.assertIn('ompd:latest', values(call, '-t', '--tag'))
+        build_args = values(call, '--build-arg')
+        uid, gid = (1000, 1000) if sys.platform == 'darwin' else (os.getuid(), os.getgid())
+        self.assertIn('USER_UID=' + str(uid), build_args)
+        self.assertIn('USER_GID=' + str(gid), build_args)
+        self.assertEqual(values(call, '--label'), ['value with spaces;$HOME'])
+        self.assertEqual(Path(call[-1]), self.repo)
+
+    def test_build_macos_uses_container_identity(self):
+        mocked_bin = self.case / 'darwin-bin'
+        mocked_bin.mkdir()
+        uname = mocked_bin / 'uname'
+        uname.write_text('#!/bin/sh\nprintf "Darwin\\n"\n')
+        uname.chmod(0o755)
+        result = self.invoke(script='build',
+                             env={'PATH': str(mocked_bin) + os.pathsep + self.env['PATH']})
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+        calls = [args for args, _ in self.calls() if args[:1] == ['build']]
+        self.assertEqual(len(calls), 1)
+        self.assertIn('USER_UID=1000', values(calls[0], '--build-arg'))
+        self.assertIn('USER_GID=1000', values(calls[0], '--build-arg'))
+
+    def test_clearcache_removes_cache_preserving_agents_and_external_symlinks(self):
+        data = self.repo / 'data'
+        protected = []
+        for agent in (self.agent(), self.agent('work'), self.agent('personal')):
+            for relative in ('agent.db', 'settings.json', 'config.yml', 'config.yaml',
+                             'auth.json', 'sessions/retained.jsonl', 'sessions/deep/other.jsonl'):
+                path = agent / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                content = ('protected sentinel: ' + str(path.relative_to(data)) + '\n').encode()
+                path.write_bytes(content)
+                protected.append((path, content))
+        cache = data / '.cache'
+        disposable = cache / 'nested' / 'disposable-cache'
+        disposable.parent.mkdir(parents=True)
+        disposable.write_bytes(b'discard this cache\n')
+        external = self.case / 'external-cache'
+        external.mkdir()
+        precious = external / 'precious-file'
+        precious.write_bytes(b'external sentinel must survive\n')
+        (cache / 'external-link').symlink_to(external, target_is_directory=True)
+        result = self.invoke(script='clearcache')
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+        self.assertFalse(disposable.exists(), 'Real cleanup must remove targeted cache contents')
+        for path, content in protected:
+            self.assertEqual(path.read_bytes(), content)
+        self.assertEqual(precious.read_bytes(), b'external sentinel must survive\n')
+        self.assertEqual(self.calls(), [])
+
+        # A cache root itself may be an external symlink, not merely contain one.
+        if cache.is_symlink():
+            cache.unlink()
+        elif cache.exists():
+            shutil.rmtree(cache)
+        cache.symlink_to(external, target_is_directory=True)
+        result = self.invoke(script='clearcache')
+        if result.returncode:
+            self.assertIn(b'symlink', result.stderr.lower(),
+                          'Safe refusal of a symlinked cache root must be explicit')
+        self.assertEqual(precious.read_bytes(), b'external sentinel must survive\n')
+        for path, content in protected:
+            self.assertEqual(path.read_bytes(), content)
+        self.assertEqual(self.calls(), [])
+
+    def test_clearcache_dry_run_preserves_everything(self):
+        data = self.repo / 'data'
+        protected = [data / '.omp' / 'agent' / 'auth.json',
+                     data / '.omp' / 'agent' / 'sessions' / 'session.jsonl',
+                     data / '.cache' / 'disposable-cache',
+                     self.case / 'external' / 'precious-file']
+        for path in protected:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'keep-this-content\n')
+        linked = data / '.cache' / 'external-link'
+        linked.symlink_to(self.case / 'external', target_is_directory=True)
+        result = self.invoke('--dry-run', script='clearcache')
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+        for path in protected:
+            self.assertEqual(path.read_bytes(), b'keep-this-content\n')
+        self.assertTrue(linked.is_symlink())
+        self.assertEqual(self.calls(), [])
+
+    def test_clearcache_refuses_home_cache_and_filesystem_roots(self):
+        outside = self.case / 'outside-cleanup'
+        sentinel = outside / '.cache' / 'sentinel'
+        sentinel.parent.mkdir(parents=True)
+        sentinel.write_bytes(b'outside cache must survive\n')
+        linked_home = self.case / 'linked-home'
+        linked_home.symlink_to(outside, target_is_directory=True)
+        data = self.repo / 'data'
+        data.mkdir()
+        (data / '.cache').symlink_to(outside / '.cache', target_is_directory=True)
+        for root, message in ((str(linked_home), b'symlink'),
+                              (str(data), b'symlink'), ('/', b'refusing')):
+            with self.subTest(root=root):
+                result = self.invoke(script='clearcache', env={'OMPD_DATA_DIR': root})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr.lower())
+                self.assertEqual(sentinel.read_bytes(), b'outside cache must survive\n')
+                self.assertEqual(self.calls(), [])
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

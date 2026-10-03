@@ -1,0 +1,20 @@
+/data/*
+/data/.*
+!/data/.gitkeep
+/config/**/*.local.yml
+/config/*.local.yml
+/config/**/*.local.yaml
+/config/*.local.yaml
+# Optional native templates may contain credentials; keep local by default.
+/config/models.yml
+/config/models.yaml
+/config/mcp.json
+*.pem
+*.key
+.env
+.env.*
+*.log
+*.tmp
+*.bak
+.DS_Store
+node_modules/

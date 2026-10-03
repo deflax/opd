@@ -1,0 +1,5 @@
+# First-launch template and per-run native overlay; no model is forced.
+# Existing config.yml, config.yaml or legacy settings.json is never replaced.
+# Bundled native agents are already enabled; keep task concurrency modest.
+task:
+  maxConcurrency: 4
