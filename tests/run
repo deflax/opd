@@ -392,7 +392,18 @@ class LauncherTests(unittest.TestCase):
         # Check this small canonical YAML as text, not upstream runtime parsing.
         settings = [line for line in content.decode().splitlines()
                     if line.strip() and not line.lstrip().startswith('#')]
-        self.assertEqual(settings, ['task:', '  maxConcurrency: 4'])
+        expected_agents = {
+            'scout': 'openai/gpt-6-luna',
+            'reviewer': 'openai/gpt-6-astra',
+            'security-reviewer': 'openai/gpt-6-astra',
+            'task': 'openai/gpt-6.1-sol',
+            'sonic': 'openai/gpt-6.1-sol',
+        }
+        self.assertEqual(settings, [
+            'modelRoles:', '  default: openai/gpt-6.1-sol',
+            'task:', '  maxConcurrency: 4', '  agentModelOverrides:',
+            *[f'    {agent}: {model}' for agent, model in expected_agents.items()],
+        ])
         for profile in (None, 'seeded-native'):
             with self.subTest(profile=profile):
                 args = ['--pi-profile', profile] if profile else []
@@ -650,6 +661,29 @@ class LauncherTests(unittest.TestCase):
                          'Pass base, local, then named profile overlays to native omp')
         for path in resolved:
             self.assertTrue(path.is_file(), f'Missing overlay: {path}')
+
+    def test_ollama_overlay_maps_all_bundled_agents_and_is_forwarded(self):
+        profile = self.repo / 'config' / 'profiles' / 'ollama.yml'
+        settings = [line for line in profile.read_text().splitlines()
+                    if line.strip() and not line.lstrip().startswith('#')]
+        agents = ('scout', 'reviewer', 'security-reviewer', 'task', 'sonic')
+        self.assertEqual(settings, [
+            'modelRoles:', '  default: ollama/gemma4:26b-16k',
+            'task:', '  agentModelOverrides:',
+            *[f'    {agent}: ollama/gemma4:26b-16k' for agent in agents],
+        ])
+        # Mock launch checks overlay delivery and literal --model forwarding,
+        # not native model availability or runtime model resolution.
+        call = self.launch('--pi-profile', 'ollama', '--model', 'example/main')
+        assignments = dict(item.split('=', 1) for item in values(call, '-e', '--env')
+                           if '=' in item)
+        self.assertEqual(assignments['PI_CONFIG_FILES'].split(':'),
+                         ['/config/ompd/config.yml', '/config/ompd/profiles/ollama.yml'])
+        self.assertEqual(mounts(call).get('/config/ompd'), profile.parent.parent)
+        base = self.repo / 'config' / 'config.yml'
+        self.assertEqual(self.seeded_config('ollama').read_bytes(), base.read_bytes())
+        self.assertEqual(call[call.index('/usr/local/bin/omp') + 1:],
+                         ['--model', 'example/main'])
 
     def test_existing_config_formats_are_preserved(self):
         for name in ('config.yml', 'config.yaml', 'settings.json'):

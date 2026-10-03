@@ -134,13 +134,30 @@ OMP v18.4.10's native task tool is enabled by default, with batching and async
 execution enabled. No extra parent prompt, custom role files, or plugins are
 needed; ompd adds no custom agent-directory seeding or mounts.
 
-| Bundled agent | Purpose |
-| --- | --- |
-| `scout` | Read-only project exploration |
-| `reviewer` | Patch/code review, not a general architecture oracle |
-| `security-reviewer` | Evidence-based security review |
-| `task` | Full-capability general worker |
-| `sonic` | Mechanical updates |
+The base config explicitly assigns the main session and each bundled agent:
+
+| Session/agent | Purpose | Configured model |
+| --- | --- | --- |
+| Main session | Interactive coding agent | `openai/gpt-6.1-sol` |
+| `scout` | Read-only project exploration | `openai/gpt-6-luna` |
+| `reviewer` | Patch/code review, not a general architecture oracle | `openai/gpt-6-astra` |
+| `security-reviewer` | Evidence-based security review | `openai/gpt-6-astra` |
+| `task` | Full-capability general worker | `openai/gpt-6.1-sol` |
+| `sonic` | Mechanical updates | `openai/gpt-6.1-sol` |
+
+These use native `modelRoles.default` and the `task.agentModelOverrides` string
+map. Override assignments in `config/config.local.yml`; the selected profile
+overlay takes precedence. No reasoning-effort or model-variant overrides are
+configured; native thinking behavior is unchanged.
+Native `--model` changes the main session, not these explicit worker assignments;
+a task request can supply a worker-model override. A resolved worker model without
+usable credentials may fall back to the parent model. Configured mappings are
+not an offline or security guarantee.
+
+The IDs are user-selected preferences, not runtime-validated model availability.
+Confirm them with native `./pi -- models` and configure the required provider
+credentials (or Ollama endpoint for the local profile). Docker/omp are unavailable
+here; live delegation has not been tested.
 
 For example, ask: “Use scout to explore this project, then task to implement the
 change.” Delegation follows native prompts and model behavior, not a rigid
@@ -151,10 +168,7 @@ default: 32). Override it in `config/config.local.yml` using the normal overlay
 order. The lower cap may reduce throughput and concurrent cost; total cost still
 depends on the workload and models used.
 
-Native model routing is retained: `@task` inherits the active model when no usable
-task mapping exists; scout/sonic use `@smol` and reviewer uses `@slow`. These
-roles may resolve to different available models/providers; no exact model is
-guaranteed. Native `task.isolation.enabled` defaults to `false`: children share the
+Native `task.isolation.enabled` defaults to `false`: children share the
 mounted workspace/home. Assign disjoint edit ownership to concurrent workers;
 there is no automatic worktree-isolation promise.
 
@@ -164,9 +178,11 @@ and [task-agent discovery](https://github.com/can1357/oh-my-pi/blob/v18.4.10/doc
 ### Local Ollama
 
 Ollama is a built-in discovered provider; no models template is required.
-The included `ollama` overlay selects `ollama/gemma4:26b-16k`; it must exist in
-your Ollama instance, or change the model in `config/profiles/ollama.yml`
-(the profile overlay takes precedence over `config/config.local.yml`):
+The included `ollama` overlay assigns the main session **and all five bundled
+agents** to `ollama/gemma4:26b-16k`, keeping their model assignments local. The
+model must exist in your Ollama instance. To change it, update the main and
+per-agent assignments in `config/profiles/ollama.yml` (the profile overlay takes
+precedence over `config/config.local.yml`):
 
 ```text
 ollama run gemma4:26b

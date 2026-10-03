@@ -39,14 +39,24 @@ behavior and do not replace real image builds or runtime checks.
 - Host networking and optional X11 weaken isolation; document implications.
 - Clear only `.cache`; preserve all `.omp` auth/settings/models/sessions and
   user assets. Refuse linked cleanup roots; never guess internal cache paths.
-- Rely on bundled native task-agent prompts and default model routing; do not add
+- Rely on bundled native task-agent prompts and native model-setting schemas; do not add
   custom role files, plugins, agent-directory seeding/mounts, or parent prompts.
   Native task batching/async are enabled by default. Base task.maxConcurrency is
   4 (native default 32), overridable through normal local/profile overlays.
-  @task inherits the active model without a usable mapping; scout/sonic use @smol
-  and reviewer uses @slow. Reviewer is for patch/code review, not a general oracle.
-  Delegation/model choices are not rigid policy guarantees. Native task.isolation
-  defaults false: children share workspace/home; require disjoint edit ownership,
+  Set modelRoles.default to openai/gpt-6.1-sol and task.agentModelOverrides as a
+  string map: scout → openai/gpt-6-luna; reviewer/security-reviewer →
+  openai/gpt-6-astra; task/sonic → openai/gpt-6.1-sol. Preserve cap4. The ollama
+  profile overrides main and all five agents to ollama/gemma4:26b-16k, retaining
+  local-model assignments. Local overlays can customize assignments; profiles win.
+  Native --model changes main, not pinned worker mappings; request-specific worker
+  models can override. A resolved model without credentials may fall back to the
+  parent: local mappings are not an offline/security guarantee.
+  Do not configure reasoning-effort/variant overrides. IDs are user preferences,
+  not runtime-validated availability; confirm with native `./pi -- models` and
+  required provider credentials/Ollama endpoint. No live delegation test is claimed.
+  Reviewer is for patch/code review, not a general oracle. Delegation is not a
+  rigid policy guarantee. Native task.isolation.enabled defaults false:
+  children share workspace/home; require disjoint edit ownership,
   not presumed worktrees. MCP remains user-managed native persisted configuration.
 - Forward unknown native arguments literally; do not invent wrapper web/port
   features. Native terminal/print/RPC/ACP stay native.

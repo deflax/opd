@@ -2,3 +2,10 @@
 # Built-in Ollama discovery uses OLLAMA_BASE_URL / OLLAMA_HOST, then localhost:11434.
 modelRoles:
   default: ollama/gemma4:26b-16k
+task:
+  agentModelOverrides:
+    scout: ollama/gemma4:26b-16k
+    reviewer: ollama/gemma4:26b-16k
+    security-reviewer: ollama/gemma4:26b-16k
+    task: ollama/gemma4:26b-16k
+    sonic: ollama/gemma4:26b-16k

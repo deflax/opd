@@ -1,5 +1,13 @@
-# First-launch template and per-run native overlay; no model is forced.
+# First-launch template and per-run native overlay; default model routing below.
 # Existing config.yml, config.yaml or legacy settings.json is never replaced.
+modelRoles:
+  default: openai/gpt-6.1-sol
 # Bundled native agents are already enabled; keep task concurrency modest.
 task:
   maxConcurrency: 4
+  agentModelOverrides:
+    scout: openai/gpt-6-luna
+    reviewer: openai/gpt-6-astra
+    security-reviewer: openai/gpt-6-astra
+    task: openai/gpt-6.1-sol
+    sonic: openai/gpt-6.1-sol
