@@ -6,6 +6,26 @@ only persistent `.cache` contents. Validate script syntax with `bash -n` and
 the hermetic wrapper test suite with `python3 tests/run`; these mock Docker
 behavior and do not replace real image builds or runtime checks.
 
+- Preserve the primary development-toolchain baseline: apt tools, Python language
+  tooling, Terraform/terraform-ls, Node 24 language tooling, global Playwright MCP,
+  and managed browser/FFmpeg aliases under /ms-playwright. Preserve the exact
+  `npx @playwright/mcp install-browser chromium --with-deps` method and chrome
+  executable discovery; do not infer browser branding from the alias. Use the signed NodeSource repo
+  and clean apt lists within installing layers. Install pinned native omp; no
+  second browser installation or Bun runtime. Keep robust UID/GID/macOS mapping.
+- Native browser executable lookup honors PUPPETEER_EXECUTABLE_PATH first; point
+  it to /usr/local/bin/playwright-chromium. Keep PLAYWRIGHT_BROWSERS_PATH and MCP
+  executable environment aligned. Native browser.headless stays true by default;
+  explicit browser.open({headed:true,...}) needs working X11/XQuartz. Native
+  launch defaults include --no-sandbox; do not claim browser sandbox isolation.
+- config/playwright-mcp.json is preserved optional headed MCP launch config,
+  mounted read-only at /config/ompd/playwright-mcp.json. Do not auto-register it,
+  seed mcp.json, inject native config, or copy its sandbox/software flags into
+  native browser settings. No invented browser.args. MCP remains user-managed.
+- Empty OMPD_DISPLAY disables forwarding and XQuartz startup/access side effects.
+  Headed macOS requires Docker Desktop networking, XQuartz network clients, and
+  local connection permissions. Verify both amd64 and arm64 with actual builds;
+  source/hermetic checks and prior images' success do not validate the new image.
 - Resolve launcher symlinks and hash physical caller cwd for the stable native
   `/workspaces/<sanitized basename>-<12 SHA-256 hex>` session bucket.
 - Persist repo `data/` as `/home/coder` by default. Never inspect runtime auth or

@@ -239,6 +239,124 @@ class LauncherTests(unittest.TestCase):
         self.assertTrue(present, f'Profile was not seeded: {agent}')
         return present[0]
 
+    def mock_display(self, platform):
+        """Redirect only fixed host X11 paths in this case's isolated launcher."""
+        mocked_bin = self.case / 'display-bin'
+        mocked_bin.mkdir()
+        uname = mocked_bin / 'uname'
+        uname.write_text(f'#!/bin/sh\nprintf "{platform}\\n"\n')
+        uname.chmod(0o755)
+        host_calls = self.case / 'display-calls.jsonl'
+        recorder = f'''#!/usr/bin/env python3
+import json, os, pathlib, sys
+with open({str(host_calls)!r}, 'a') as log:
+    log.write(json.dumps({{'command': pathlib.Path(sys.argv[0]).name,
+                          'args': sys.argv[1:], 'display': os.environ.get('DISPLAY')}}) + '\\n')
+'''
+        for name in ('open', 'xhost'):
+            command = mocked_bin / name
+            command.write_text(recorder)
+            command.chmod(0o755)
+        quartz = self.case / 'XQuartz.app'
+        quartz.mkdir()
+        socket = self.case / 'X11-unix'
+        socket.mkdir()
+        launcher = self.repo / 'pi'
+        text = launcher.read_text()
+        substitutions = [
+            ('-d /Applications/Utilities/XQuartz.app', f'-d "{quartz}"', 1),
+            ('-d /Applications/XQuartz.app', f'-d "{quartz}"', 1),
+            ('/usr/bin/open -a XQuartz', f'"{mocked_bin / "open"}" -a XQuartz', 1),
+            ('/opt/X11/bin/xhost', str(mocked_bin / 'xhost'), 2),
+            ('-d /tmp/.X11-unix', f'-d "{socket}"', 1),
+            ('source=/tmp/.X11-unix,', f'source={socket},', 1),
+        ]
+        for original, replacement, count in substitutions:
+            self.assertEqual(text.count(original), count,
+                             f'Expected fixed host-path substitution: {original}')
+            text = text.replace(original, replacement)
+        launcher.write_text(text)
+        self.env['PATH'] = str(mocked_bin) + os.pathsep + self.env['PATH']
+        return host_calls, socket
+
+    def test_darwin_default_display_rewriting_and_xquartz_access(self):
+        host_calls, _ = self.mock_display('Darwin')
+        for display in (None, '', ':0', ':1', '/tmp/launchd-test/org.xquartz:0',
+                        '/private/tmp/com.apple.launchd.test/org.xquartz:0',
+                        '/var/run/com.apple.launchd.test/org.xquartz:0', 'remote.example:2'):
+            with self.subTest(display=display):
+                self.reset_log()
+                if host_calls.exists():
+                    host_calls.unlink()
+                call = self.launch(env={} if display is None else {'DISPLAY': display})
+                expected = 'remote.example:2' if display == 'remote.example:2' else 'host.docker.internal:0'
+                self.assertIn('DISPLAY=' + expected, values(call, '-e', '--env'))
+                calls = [json.loads(line) for line in host_calls.read_text().splitlines()]
+                self.assertEqual(calls, [
+                    {'command': 'open', 'args': ['-a', 'XQuartz'], 'display': display},
+                    {'command': 'xhost', 'args': ['+127.0.0.1'], 'display': display or ':0'},
+                    {'command': 'xhost', 'args': ['+localhost'], 'display': display or ':0'},
+                ])
+                self.assertNotIn('/tmp/.X11-unix', mounts(call))
+                self.assertNotIn('/tmp/.docker.xauth', mounts(call))
+
+    def test_darwin_explicit_display_passes_through_without_rewriting(self):
+        host_calls, _ = self.mock_display('Darwin')
+        for override in ('remote.example:7', ':3', '/tmp/explicit/org.xquartz:0'):
+            with self.subTest(override=override):
+                self.reset_log()
+                host_calls.unlink(missing_ok=True)
+                call = self.launch(env={'DISPLAY': ':9', 'OMPD_DISPLAY': override})
+                self.assertIn('DISPLAY=' + override, values(call, '-e', '--env'))
+                calls = [json.loads(line) for line in host_calls.read_text().splitlines()]
+                self.assertEqual([entry['args'] for entry in calls],
+                                 [['-a', 'XQuartz'], ['+127.0.0.1'], ['+localhost']])
+                self.assertTrue(all(entry['display'] == ':9' for entry in calls))
+
+    def test_darwin_empty_display_override_disables_all_host_actions(self):
+        host_calls, socket = self.mock_display('Darwin')
+        authority = self.home / 'test.xauth'
+        authority.write_bytes(b'synthetic authority\n')
+        call = self.launch(env={'DISPLAY': ':9', 'OMPD_DISPLAY': '',
+                                'XAUTHORITY': str(authority)})
+        self.assertFalse(host_calls.exists(), 'Disabled display must not open XQuartz or invoke xhost')
+        self.assertFalse(any(item.split('=', 1)[0] in ('DISPLAY', 'XAUTHORITY')
+                             for item in values(call, '-e', '--env')))
+        self.assertNotIn(socket, mounts(call).values())
+        self.assertNotIn('/tmp/.docker.xauth', mounts(call))
+
+    def test_linux_display_mounts_socket_and_authority_readonly(self):
+        host_calls, socket = self.mock_display('Linux')
+        authority = self.home / 'test authority.xauth'
+        authority.write_bytes(b'synthetic authority\n')
+        for override in (None, 'remote.example:7'):
+            with self.subTest(override=override):
+                self.reset_log()
+                env = {'DISPLAY': ':4', 'XAUTHORITY': str(authority)}
+                if override is not None:
+                    env['OMPD_DISPLAY'] = override
+                call = self.launch(env=env)
+                self.assertIn(f'type=bind,source={socket},target=/tmp/.X11-unix,readonly',
+                              values(call, '--mount'))
+                self.assertIn(f'type=bind,source={authority},target=/tmp/.docker.xauth,readonly',
+                              values(call, '--mount'))
+                self.assertIn('DISPLAY=' + (override or ':4'), values(call, '-e', '--env'))
+                self.assertIn('XAUTHORITY=/tmp/.docker.xauth', values(call, '-e', '--env'))
+                self.assertFalse(host_calls.exists())
+
+    def test_linux_empty_display_override_adds_no_display_resources(self):
+        host_calls, socket = self.mock_display('Linux')
+        authority = self.home / 'test.xauth'
+        authority.write_bytes(b'synthetic authority\n')
+        call = self.launch(env={'DISPLAY': ':4', 'OMPD_DISPLAY': '',
+                                'XAUTHORITY': str(authority)})
+        self.assertFalse(any(item.split('=', 1)[0] in ('DISPLAY', 'XAUTHORITY')
+                             for item in values(call, '-e', '--env')))
+        self.assertNotIn(socket, mounts(call).values())
+        self.assertNotIn('/tmp/.X11-unix', mounts(call))
+        self.assertNotIn('/tmp/.docker.xauth', mounts(call))
+        self.assertFalse(host_calls.exists())
+
     def test_help_never_calls_docker(self):
         result = self.invoke('--pi-help')
         self.assertEqual(result.returncode, 0)

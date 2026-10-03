@@ -247,6 +247,7 @@ add_overlay() {
 prepare_display() {
     DISPLAY_ARGS=()
     local host_display="${OMPD_DISPLAY-${DISPLAY:-}}" xhost_bin xhost_display authority
+    [[ ! ${OMPD_DISPLAY+x} || -n "$OMPD_DISPLAY" ]] || return 0
     case "$(uname -s)" in
         Darwin)
             if [[ -d /Applications/Utilities/XQuartz.app || -d /Applications/XQuartz.app ]]; then

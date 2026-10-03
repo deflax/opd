@@ -66,6 +66,23 @@ values are not a conflict. Explicit native arguments are not rewritten; the
 launcher sets both native profile environment variables to the selected name
 without injecting `--profile` or other native flags.
 
+## Image tools
+
+The image retains the development toolchain alongside pinned native `omp`:
+
+- Shell/search/Git/network tools: Bash, Git, SSH, ripgrep, fd, fzf, jq, yq, and clipboard utilities.
+- Languages: Python with basedpyright, pytest, Pydantic/FastAPI; Go; GCC/Make/CMake;
+  Terraform and terraform-ls; Node 24/npm, TypeScript and its language server,
+  Vue language server, Intelephense, ast-grep, and Biome.
+- Documents/media: FFmpeg, Poppler, qpdf, OCRmyPDF, and Tesseract with English data.
+- Browsers: global Playwright MCP and its managed browser (`chrome` executable)
+  and FFmpeg under `/ms-playwright`, exposed as `playwright-chromium` and
+  `playwright-ffmpeg`. Installation preserves
+  `npx @playwright/mcp install-browser chromium --with-deps`.
+
+Node uses the signed NodeSource repository. No second browser installation or
+Bun runtime is added.
+
 ## Persistence and configuration
 
 The physical current directory (`pwd -P`) is mounted read/write at stable
@@ -81,6 +98,7 @@ host project changes that cwd/hash, so old sessions are not automatically moved.
 | `config/config.yml` | One-time writable template and read-only overlay on every launch |
 | `config/config.local.yml` | Optional gitignored read-only native overlay |
 | `config/profiles/NAME.yml` | Optional committed native profile overlay |
+| `config/playwright-mcp.json` | Optional headed Playwright MCP launch config; not registered automatically |
 | `data/.omp/agent/` | Persistent default native agent state |
 | `data/.omp/profiles/NAME/agent/` | Persistent named-profile native agent state |
 
@@ -272,8 +290,34 @@ starts installed XQuartz and grants `localhost`/`127.0.0.1` access with `xhost`;
 local/launchd display values become `host.docker.internal:0` unless
 `OMPD_DISPLAY` is explicitly set. Enable XQuartz network-client connections if
 needed. X11 grants desktop access and can weaken isolation; disable it with
-`OMPD_DISPLAY=''`. Docker mount paths containing commas are rejected rather
+`OMPD_DISPLAY=''` (also skips XQuartz startup and access changes). Docker mount paths containing commas are rejected rather
 than misinterpreted. No Docker socket is mounted.
+
+### Native browser and optional Playwright MCP
+
+Native OMP browser automation is independent of MCP. Its executable lookup first
+honors `PUPPETEER_EXECUTABLE_PATH`; the image points that to
+`/usr/local/bin/playwright-chromium`. Native `browser.headless` defaults to `true`.
+With a working DISPLAY, explicitly ask OMP to open a headed native browser, for
+example: “Open https://example.com using
+`browser.open({headed:true,url:'https://example.com'})`.” Native launch defaults
+include `--no-sandbox`, which weakens browser isolation.
+
+`config/playwright-mcp.json` preserves the optional headed MCP launch settings
+and is available read-only at `/config/ompd/playwright-mcp.json`. To use it,
+register Playwright MCP yourself with its `--config` path in native MCP settings;
+the wrapper does not auto-register MCP, seed `mcp.json`, or inject this JSON into
+native configuration. `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` and
+`PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/local/bin/playwright-chromium` select the
+installed browser for MCP. The JSON's `chromiumSandbox:false` and GPU/software
+rendering flags apply **only to optional MCP**, not the native OMP browser, and
+weaken isolation. No native `browser.args` or headed default is configured.
+
+On macOS, headed windows require Docker Desktop host networking, a running
+XQuartz with **Allow connections from network clients** enabled, and permission
+for the forwarded local connection (`xhost`, as described above). Linux requires
+a reachable X server and suitable Xauthority/socket permissions. DISPLAY alone
+does not guarantee that either browser can open a window.
 
 ## Verification
 
@@ -287,7 +331,9 @@ python3 tests/run
 The Python checks use a mock Docker argv/environment recorder and temporary
 repository copies, not a real image or upstream runtime. They do not establish
 that the image builds or native configuration loads correctly.
-No real Docker build or smoke-test result is claimed here.
+Docker is unavailable here; no real Docker build or smoke-test result is claimed.
+Both `linux/amd64` and `linux/arm64` need actual builds and runtime checks; prior
+ARM64 success with another image does not validate this rebuilt image.
 
 For a **real Docker smoke test**, run the following on a Docker-enabled host
 with host networking available (opt-in on Docker Desktop). These are suggested
@@ -297,6 +343,17 @@ checks, not a claim that a real build or launch has been tested:
 ./build
 # If running as root, supply positive non-root IDs instead:
 # ./build --build-arg USER_UID=1000 --build-arg USER_GID=1000
+docker run --rm --entrypoint /bin/bash ompd:latest -lc '
+  set -e
+  for tool in git ssh rg fd fzf jq yq python basedpyright-langserver pytest \
+    go gcc make cmake terraform terraform-ls node npm tsc \
+    typescript-language-server vue-language-server intelephense ast-grep biome \
+    playwright-mcp playwright-ffmpeg ffmpeg pdftotext qpdf ocrmypdf tesseract; do
+    command -v "$tool"
+  done
+  omp --version
+  playwright-chromium --version
+'
 smoke_home="$(mktemp -d)" # Must be writable by the image's coder UID.
 OMP_PROFILE=default OMPD_DATA_DIR="$smoke_home" OMPD_DISPLAY='' ./pi -- --version
 OMP_PROFILE=default OMPD_DATA_DIR="$smoke_home" OMPD_DISPLAY='' ./pi -- --help
@@ -311,6 +368,12 @@ also try native `--print` and an interactive launch; verify overlay values retur
 after restart even after `/settings` edits. Use `--pi-debug` if container
 inspection is needed. Stop/remove retained debug containers before deleting the
 temporary home. Do not use real auth/session data for these checks.
+
+For a live headed check, launch `pi` with working XQuartz/X11 and ask for the
+native `browser.open` example above; verify that a window appears. Test optional
+Playwright MCP separately after explicit user registration with
+`--config /config/ompd/playwright-mcp.json`. A successful native-browser test does
+not establish that MCP is registered or working. Neither live test was run here.
 
 ## Sources
 
