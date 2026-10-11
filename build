@@ -17,6 +17,26 @@ while [[ -L $script_path ]]; do
 done
 script_dir=$(CDPATH= cd -P "$(dirname "$script_path")" && pwd)
 
+# Only the first argument selects the base build; remaining args belong to Docker.
+base_image=${OMPD_BASE_IMAGE:-ompd-base:latest}
+if [[ ${1:-} = --base ]]; then
+    shift
+    exec docker build \
+        --file "$script_dir/Dockerfile.base" \
+        --tag "$base_image" \
+        "$@" \
+        "$script_dir"
+fi
+
+# Keep the expensive toolchain image independent of omp-only rebuild options.
+if ! docker image inspect "$base_image" >/dev/null 2>&1; then
+    printf 'Base image unavailable; building Debian toolchain first\n' >&2
+    docker build \
+        --file "$script_dir/Dockerfile.base" \
+        --tag "$base_image" \
+        "$script_dir"
+fi
+
 # Docker Desktop mounts do not require macOS's 501/staff identity in the image.
 if [[ $(uname -s) = Darwin ]]; then
     user_uid=1000
@@ -27,7 +47,9 @@ else
 fi
 
 exec docker build \
+    --file "$script_dir/Dockerfile" \
     --tag "${OMPD_IMAGE:-ompd:latest}" \
+    --build-arg "BASE_IMAGE=$base_image" \
     --build-arg "USER_UID=$user_uid" \
     --build-arg "USER_GID=$user_gid" \
     "$@" \

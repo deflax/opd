@@ -66,6 +66,9 @@ Requirements: Docker, Bash, and `sha256sum` or `shasum`.
 
 ```bash
 ./build
+./build --no-cache                       # Reinstall omp without rebuilding Debian/tools
+./build --base                          # Rebuild the Debian/toolchain image only
+./build                                 # Build omp on the updated base
 OMPD_IMAGE=my-ompd ./build
 ./build --build-arg USER_UID=1000 --build-arg USER_GID=1000
 ```
@@ -73,6 +76,34 @@ OMPD_IMAGE=my-ompd ./build
 Linux builds use the host UID/GID by default. macOS builds use `1000:1000`
 because Docker Desktop does not need the host account IDs inside the image.
 Existing files under `data/` must be writable by the image user.
+
+The image is built from two separate Dockerfiles:
+
+- `Dockerfile.base` builds `ompd-base:latest` from Debian, including the development
+  tools, Node, Playwright MCP, and managed Chromium/FFmpeg.
+- `Dockerfile` builds `ompd:latest` from that base, installing native omp and
+  creating the UID/GID-mapped runtime user.
+
+`./build` creates the base automatically if its tag is absent locally; otherwise
+it reuses it without rebuilding it. Changes to `Dockerfile.base` or
+`playwright-chromium-launcher` require an explicit `./build --base`, followed by
+`./build`. To refresh all base dependencies, use `./build --base --pull --no-cache`.
+Changing omp's version or runtime UID/GID does not rebuild the toolchain.
+
+Set `OMPD_BASE_IMAGE` to select a different base tag for both build commands.
+Docker options apply only to the selected build; the automatic missing-base build
+uses defaults. For cross-architecture builds, build a matching base explicitly
+first and use separate tags for each architecture:
+
+```bash
+OMPD_BASE_IMAGE=ompd-base:amd64 ./build --base --platform linux/amd64
+OMPD_BASE_IMAGE=ompd-base:amd64 OMPD_IMAGE=ompd:amd64 ./build --platform linux/amd64
+OMPD_BASE_IMAGE=ompd-base:arm64 ./build --base --platform linux/arm64
+OMPD_BASE_IMAGE=ompd-base:arm64 OMPD_IMAGE=ompd:arm64 ./build --platform linux/arm64
+```
+
+Direct Docker builds must also build or pull the base first, then select it with
+`docker build --build-arg BASE_IMAGE=...` when not using `ompd-base:latest`.
 
 ## Profiles and state
 
@@ -181,6 +212,7 @@ Useful wrapper variables:
 | Variable | Purpose |
 | --- | --- |
 | `OMPD_IMAGE` | Docker image tag; default `ompd:latest` |
+| `OMPD_BASE_IMAGE` | Build-only Debian/toolchain image tag; default `ompd-base:latest` |
 | `OMPD_DATA_DIR` | Absolute persistent home path |
 | `OMPD_PROFILE` | Wrapper default profile |
 | `OMP_PROFILE`, `PI_PROFILE` | Native profile defaults |
@@ -256,6 +288,8 @@ python3 tests/run
 
 These tests mock Docker. They validate wrapper behavior, not real image builds
 or native runtime behavior.
+The split build has not been validated with real amd64/arm64 image builds here;
+both architectures require actual builds and runtime smoke checks.
 
 Docker smoke checks on a Docker-enabled host:
 
