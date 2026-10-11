@@ -538,24 +538,28 @@ with open({str(host_calls)!r}, 'a') as log:
     def test_base_config_seeded_once_default_and_named(self):
         base = self.repo / 'config' / 'config.yml'
         content = base.read_bytes()
+        local = base.with_name('config.local.yml')
+        local.write_text('task:\n  maxConcurrency: 9\n')
         for profile in (None, 'seeded-native'):
             with self.subTest(profile=profile):
+                base.write_bytes(content)
                 args = ['--pi-profile', profile] if profile else []
                 self.reset_log()
-                call = self.launch(*args)
+                call = self.launch(*args, env={'PI_CONFIG_FILES': '/missing/host-overlay.yml'})
                 config = self.seeded_config(profile)
                 self.assertEqual(config.read_bytes(), content)
-                self.assertIn('PI_CONFIG_FILES=/config/ompd/config.yml',
-                              values(call, '-e', '--env'))
-                self.assertEqual(mounts(call).get('/config/ompd'), base.parent)
+                self.assertFalse(any(item.split('=', 1)[0] == 'PI_CONFIG_FILES'
+                                     for item in values(call, '-e', '--env')))
                 customized = b'task:\n  maxConcurrency: 2\n'
                 config.write_bytes(customized)
+                changed_seed = b'task:\n  maxConcurrency: 7\n'
+                base.write_bytes(changed_seed)
                 self.reset_log()
                 call = self.launch(*args)
                 self.assertEqual(config.read_bytes(), customized)
-                self.assertEqual(base.read_bytes(), content)
-                self.assertIn('PI_CONFIG_FILES=/config/ompd/config.yml',
-                              values(call, '-e', '--env'))
+                self.assertEqual(base.read_bytes(), changed_seed)
+                self.assertFalse(any(item.split('=', 1)[0] == 'PI_CONFIG_FILES'
+                                     for item in values(call, '-e', '--env')))
 
     def test_wrapper_named_profile(self):
         call = self.launch('--pi-profile', 'work')
@@ -790,42 +794,67 @@ with open({str(host_calls)!r}, 'a') as log:
         self.assertFalse(self.agent('environment').exists())
         self.assertFalse(self.agent().exists())
 
-    def test_local_then_profile_config_overlays(self):
-        config = self.repo / 'config'
-        profiles = config / 'profiles'
-        profiles.mkdir(parents=True, exist_ok=True)
-        local = config / 'config.local.yml'
-        named = profiles / 'overlaid.yml'
-        local.write_text('test_local_overlay: true\n')
-        named.write_text('test_named_overlay: true\n')
-        call = self.launch('--pi-profile', 'overlaid')
-        base = config / 'config.yml'
-        self.assertEqual(self.seeded_config('overlaid').read_bytes(), base.read_bytes())
-        _, record = self.run_call()
-        env_args = values(call, '-e', '--env')
-        assignments = dict(item.split('=', 1) for item in env_args if '=' in item)
-        files = assignments.get('PI_CONFIG_FILES')
-        if files is None and 'PI_CONFIG_FILES' in env_args:
-            files = record['env'].get('PI_CONFIG_FILES')
-        self.assertTrue(files, 'Overlays must use native PI_CONFIG_FILES')
-        # Accept common native path-list separators without coupling to mount names.
-        import re
-        paths = [part.strip() for part in re.split(r'[,;:]', files) if part.strip()]
-        mounted = mounts(call)
-        resolved = []
-        for path in paths:
-            for target in sorted(mounted, key=len, reverse=True):
-                if path == target or path.startswith(target.rstrip('/') + '/'):
-                    resolved.append(mounted[target] / path[len(target):].lstrip('/'))
-                    break
-            else:
-                self.fail(f'Config overlay is not available through a bind mount: {path}')
-        self.assertEqual(resolved, [base, local, named],
-                         'Pass base, local, then named profile overlays to native omp')
-        for path in resolved:
-            self.assertTrue(path.is_file(), f'Missing overlay: {path}')
+    def test_named_config_is_a_standalone_first_launch_seed(self):
+        base = self.repo / 'config' / 'config.yml'
+        named = self.repo / 'config' / 'profiles' / 'work.yml'
+        base.write_text('task:\n  maxConcurrency: 4\n')
+        named.write_text('browser:\n  enabled: false\n')
+        self.launch('--pi-profile', 'work')
+        saved = self.seeded_config('work')
+        self.assertEqual(saved.read_bytes(), named.read_bytes(),
+                         'A named seed is standalone, not merged with the base')
+        customized = b'browser:\n  enabled: true\n'
+        saved.write_bytes(customized)
+        named.write_text('browser:\n  enabled: false\n')
+        base.unlink()
+        named.unlink()
+        self.reset_log()
+        call = self.launch('--pi-profile', 'work')
+        self.assertEqual(saved.read_bytes(), customized,
+                         'Saved native settings need no repository template on restart')
+        self.assertFalse(any(item.split('=', 1)[0] == 'PI_CONFIG_FILES'
+                             for item in values(call, '-e', '--env')))
+
+    def test_new_profile_requires_a_readable_seed(self):
+        (self.repo / 'config' / 'config.yml').unlink()
+        result = self.invoke('--pi-profile', 'unseeded')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'config template', result.stderr)
+        self.assertEqual(result.stdout, b'')
+        self.assertFalse(any(call[:1] == ['run'] for call, _ in self.calls()))
+        self.assertFalse((self.agent('unseeded') / 'config.yml').exists())
+
+    def test_models_seed_preserves_existing_equivalents(self):
+        template = self.repo / 'config' / 'models.yml'
+        template.write_text('providers: {}\n')
+        self.launch('--pi-profile', 'fresh-models')
+        self.assertEqual((self.agent('fresh-models') / 'models.yml').read_bytes(),
+                         template.read_bytes())
+        for index, name in enumerate(('models.yml', 'models.yaml', 'models.json')):
+            with self.subTest(name=name):
+                profile = f'kept-models-{index}'
+                agent = self.agent(profile)
+                agent.mkdir(parents=True)
+                existing = agent / name
+                existing.write_bytes(b'')
+                self.reset_log()
+                self.launch('--pi-profile', profile)
+                self.assertEqual(existing.read_bytes(), b'')
+                self.assertEqual(sorted(path.name for path in agent.glob('models.*')), [name])
+
+    def test_dangling_native_config_is_not_replaced(self):
+        agent = self.agent('linked-file')
+        agent.mkdir(parents=True)
+        missing = self.case / 'missing-config.yml'
+        existing = agent / 'config.yaml'
+        existing.symlink_to(missing)
+        self.launch('--pi-profile', 'linked-file')
+        self.assertTrue(existing.is_symlink())
+        self.assertFalse(missing.exists())
+        self.assertFalse((agent / 'config.yml').exists())
 
     def test_existing_config_formats_are_preserved(self):
+        (self.repo / 'config' / 'config.yml').unlink()
         for name in ('config.yml', 'config.yaml', 'settings.json'):
             with self.subTest(name=name):
                 agent = self.agent('keep')
@@ -833,7 +862,7 @@ with open({str(host_calls)!r}, 'a') as log:
                     shutil.rmtree(agent)
                 agent.mkdir(parents=True)
                 config = agent / name
-                content = b'{"test_sentinel": "preserve-me"}\n'
+                content = b''
                 config.write_bytes(content)
                 self.reset_log()
                 self.launch('--pi-profile', 'keep')

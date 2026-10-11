@@ -1,13 +1,154 @@
-# First-launch template and per-run native overlay; default model routing below.
-# Existing config.yml, config.yaml or legacy settings.json is never replaced.
 modelRoles:
-  default: openai/gpt-6.1-sol
-# Bundled native agents are already enabled; keep task concurrency modest.
+  slow: openai-codex/gpt-6-astra:high
+  smol: openai-codex/gpt-6.1-sol:low
+  default: openai-codex/gpt-6.1-sol:medium
+  tiny: openai-codex/gpt-6-luna:low
+  vision: openai-codex/gpt-6.1-sol:medium
+  plan: openai-codex/gpt-6.1-sol:medium
+  commit: openai-codex/gpt-6-luna:medium
+  task: openai-codex/gpt-6.1-sol:medium
+  judge: typesafe/jev-latest
+  memory: openai-codex/gpt-6-luna:low
+  advisor: openai-codex/gpt-6-astra:medium
+  image: openai-codex/gpt-image-2
+symbolPreset: nerd
+composer:
+  shape: band
+  tokenRate: false
+theme:
+  dark: titanium
+  light: light
+setupVersion: 2
+dev:
+  autoqaConsent: denied
+  autoqa: false
+telemetry:
+  otlpExportEnabled: false
+secrets:
+  enabled: true
+edit:
+  mode: hashline
+images:
+  blockImages: false
+statusLine:
+  sessionAccent: true
+  transparent: false
+  compactThinkingLevel: false
+  showHookStatus: false
+  preset: custom
+  rightSegments:
+    - session_name
+    - token_total
+    - context_pct
+  contextLine: embedded
+autoResume: false
+startup:
+  checkUpdate: true
+  changelogMode: summary
+browser:
+  enabled: false
+  headless: false
+  cmux: false
+  tern: false
+colorBlindMode: false
+tui:
+  resizeScrollback: preserve
+  textSizing: false
+  codexResetFireworks: true
+  titleSpinner: braille
+  hyperlinks: auto
+  mouse: true
+  tight: false
+  reactions: true
+  vimMode: false
+terminal:
+  showProgress: false
+display:
+  shimmer: classic
+  subagentLivePreview: false
+  showTokenUsage: false
+  cacheMissMarker: true
+  pinnedAgents: collapsed
+defaultThinkingLevel: low
+steeringMode: one-at-a-time
+followUpMode: one-at-a-time
+astGrep:
+  enabled: true
+security:
+  enabled: true
 task:
-  maxConcurrency: 4
   agentModelOverrides:
-    scout: openai/gpt-6-luna
-    reviewer: openai/gpt-6-astra
-    security-reviewer: openai/gpt-6-astra
-    task: openai/gpt-6.1-sol
-    sonic: openai/gpt-6.1-sol
+    scout: openai-codex/gpt-5.6-luna
+    sonic: openai-codex/gpt-5.6-luna
+    task: openai-codex/gpt-6.1-sol
+    reviewer: openai-codex/gpt-6-astra
+    security-reviewer: openai-codex/gpt-6-astra
+  disabledAgents:
+    []
+  enableEffort: true
+  maxEffort: high
+  completionProbe: false
+  showResolvedModelBadge: true
+  eager: default
+hideThinkingBlock: true
+recap:
+  enabled: false
+tier:
+  openai: none
+modelRoleStorage: global
+personality: default
+interruptMode: immediate
+tools:
+  approvalMode: yolo
+power:
+  sleepPrevention: "off"
+features:
+  unexpectedStopDetection: mechanical
+git:
+  enabled: true
+lsp:
+  diagnosticsOnWrite: true
+shellMinimizer:
+  sourceOutlineLevel: default
+ida:
+  enabled: false
+computer:
+  display: all
+commands:
+  enableClaudeProject: false
+  enableOpencodeProject: false
+providers:
+  maxInFlightRequests:
+    {}
+  antigravityEndpoint: auto
+  fetch: auto
+  fireworksTier: standard
+  tinyModelDevice: default
+  cacheWarming: "off"
+live:
+  voice: sol
+disabledExtensions:
+  - skill:epub-workflow
+  - skill:manuscript-to-xhtml
+  - rule:go-add-cleanup
+  - rule:go-bench-loop
+  - rule:go-exp-promoted
+  - rule:go-ioutil
+  - rule:go-join-hostport
+  - rule:go-new-expr
+  - rule:go-rand-v2
+  - rule:go-range-int
+  - rule:rs-box-leak
+  - rule:rs-future-prelude
+  - rule:rs-lazylock
+  - rule:rs-parking-lot
+  - rule:rs-result-type
+  - rule:rs-match-ergonomics
+codexResets:
+  autoRedeem: "no"
+retry:
+  modelFallback: false
+cycleOrder:
+  - slow
+  - default
+  - smol

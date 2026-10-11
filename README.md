@@ -11,14 +11,21 @@ project mounted under `/workspaces/...` and persistent state in `data/`.
 
 ## Quick start
 
+On each machine, clone this repository, then:
+
 ```bash
 ./build
+./pi -- login   # Configure provider authentication through native omp.
 ./pi
 
 # Optional: install the launcher on PATH.
 mkdir -p ~/.local/bin
 ln -s "$(pwd -P)/pi" ~/.local/bin/pi
 ```
+
+The repository supplies initial settings, not credentials. Each clone keeps its
+own provider authentication and subsequent settings in its persistent `data/`
+home. Do not commit or copy that home as part of the configuration template.
 
 Common calls:
 
@@ -46,7 +53,7 @@ Wrapper options:
 | Option | Behavior |
 | --- | --- |
 | `--pi-help` | Show wrapper help without Docker |
-| `--pi-profile NAME` | Select native profile state and matching overlay |
+| `--pi-profile NAME` | Select native profile state and its first-launch config seed |
 | `--pi-debug` | Keep the container and print inspect/log/remove hints |
 
 ## Build
@@ -114,27 +121,49 @@ profile boundary.
 
 ## Configuration
 
-Repository config is mounted read-only at `/config/ompd`.
+`config/config.yml` is a **first-launch seed**, not a recurring overlay. The
+launcher copies it to the selected profile's writable native `config.yml` only
+when no native `config.yml`, `config.yaml`, or legacy `settings.json` exists.
+Existing files are preserved, even when empty.
 
-Overlay order, low to high:
+Optional `config/profiles/<profile>.yml` files are standalone first-launch seeds
+for their matching profiles. If present, that file is copied instead of the
+base seed; the two are not merged. Omitted settings use native defaults.
 
-1. Persistent native config in the selected profile.
-2. `config/config.yml`.
-3. `config/config.local.yml`, if present.
-4. `config/profiles/<profile>.yml`, if present.
-5. Explicit native `--config` files.
+Seeds are copied as-is: the wrapper does not inject model, browser, or concurrency
+preferences. Native `task.maxConcurrency` defaults to 32 unless a seed or saved
+settings sets it explicitly.
 
-`config/config.yml` is also copied once into a new profile when no native config
-already exists. Existing `config.yml`, `config.yaml`, `settings.json`,
-`models.yml`, `models.yaml`, and `models.json` are preserved, including empty
-files.
+After seeding, use native `/settings`, `config set`, or edit the persisted file:
 
-Overlay values reapply on each launch. If a value is set in an overlay, it can
-override changes made later through native settings until the overlay is changed
-or removed.
+| Profile | Host config path |
+| --- | --- |
+| Default | `data/.omp/agent/config.yml` |
+| Named | `data/.omp/profiles/<name>/agent/config.yml` |
 
-The bundled `ollama` profile maps the main session and native task agents to a
-local Ollama model:
+For example:
+
+```bash
+./pi -- config set task.maxConcurrency 4
+./pi --pi-profile work -- login
+./pi --pi-profile work -- config path
+```
+
+These changes survive restarts. Editing a repository seed affects only profiles
+that have not been initialized; existing profiles are not migrated or reseeded.
+Existing homes keep their saved settings when upgrading from the old overlay
+workflow. Review those saved settings if you previously relied on an overlay.
+
+The wrapper does not load `config.local.yml` or inject/forward `PI_CONFIG_FILES`.
+Explicit native `--config` remains an opt-in overlay with native precedence.
+Repository config is still mounted read-only at `/config/ompd` for such explicit
+paths and the optional user-managed MCP launch configuration.
+
+An optional `config/models.yml` is also seeded once, preserving existing
+`models.yml`, `models.yaml`, or `models.json`, including empty files.
+
+The bundled standalone `ollama` seed maps the main session and native task
+agents to a local Ollama model, with task concurrency four:
 
 ```bash
 pi --pi-profile ollama

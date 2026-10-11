@@ -21,7 +21,7 @@ Usage: pi [wrapper options] [omp arguments]
 
   --pi-help           Show wrapper help (native help: pi -- --help)
   --pi-debug          Keep the container and print inspection/removal commands
-  --pi-profile NAME   Select a native isolated profile and optional YAML overlay
+  --pi-profile NAME   Select native profile state and its first-launch config seed
   --                  Stop wrapper parsing; forward remaining arguments literally
 
 Native arguments are preserved as an array. Explicit native --profile wins over
@@ -57,10 +57,18 @@ native_flag_kind() {
     FLAG_KIND=none
     case "$1" in
         --plan) FLAG_KIND=shadow ;;
-        --cwd|--config|--add-dir|--mode|--fork|--provider|--model|--smol|--slow|--goal|--prewalk-into|--plan-yolo-into|--max-time|--service-tier|--api-key|--system-prompt|--system-prompt-template|--append-system-prompt|--provider-session-id|--prompt-cache-key|--session-dir|--models|--tools|--thinking|--export|--hook|--extension|-e|--trusted-extension|--plugin-dir|--skills|--approval-mode)
+        --cwd|--config|--add-dir|--mode|--fork|--provider|--model|--smol|--slow|--goal|\
+        --prewalk-into|--plan-yolo-into|--max-time|--service-tier|--api-key|\
+        --system-prompt|--system-prompt-template|--append-system-prompt|\
+        --provider-session-id|--prompt-cache-key|--session-dir|--models|--tools|\
+        --thinking|--export|--hook|--extension|-e|--trusted-extension|--plugin-dir|\
+        --skills|--approval-mode)
             FLAG_KIND=string ;;
         --resume|-r|--session) FLAG_KIND=optional ;;
-        --help|--version|--allow-home|--continue|--from-claude|--from-codex|--no-session|--no-tools|--no-lsp|--no-pty|--hide-thinking|--advisor|--external-thinking|--prewalk|--no-prewalk|--plan-yolo|--print|--print-thoughts|--no-extensions|--no-skills|--no-rules|--no-title|--no-ui|--auto-approve|--yolo|--*=*) ;;
+        --help|--version|--allow-home|--continue|--from-claude|--from-codex|\
+        --no-session|--no-tools|--no-lsp|--no-pty|--hide-thinking|--advisor|\
+        --external-thinking|--prewalk|--no-prewalk|--plan-yolo|--print|--print-thoughts|\
+        --no-extensions|--no-skills|--no-rules|--no-title|--no-ui|--auto-approve|--yolo|--*=*) ;;
         --*) FLAG_KIND=unknown ;;
     esac
 }
@@ -78,7 +86,12 @@ native_consumes_value() {
 native_is_subcommand() {
     # oh-my-pi v18.9.1 coding-agent/src/cli-commands.ts names + aliases.
     case "$1" in
-        launch|acp|auth-broker|auth-gateway|agents|anonymize|bench|browser-relay|cleanse|collab|commit|completions|__complete|compress|config|dry-balance|find|gc|grep|gallery|git|grievances|images|img|if-bench|install|join|login|models|plugin|plugins|predict|ps|say|clip|play|share|setup|shell|read|render|skill|skills|ssh|stats|stream|update|usage|tiny-models|token|toks|ttsr|worktree|wt|search|q|web-search) return 0 ;;
+        launch|acp|auth-broker|auth-gateway|agents|anonymize|bench|browser-relay|\
+        cleanse|collab|commit|completions|__complete|compress|config|dry-balance|\
+        find|gc|grep|gallery|git|grievances|images|img|if-bench|install|join|login|\
+        models|plugin|plugins|predict|ps|say|clip|play|share|setup|shell|read|render|\
+        skill|skills|ssh|stats|stream|update|usage|tiny-models|token|toks|ttsr|\
+        worktree|wt|search|q|web-search) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -100,6 +113,10 @@ parse_args() {
             *) OMP_ARGS+=("$1"); shift ;;
         esac
     done
+    parse_native_args
+}
+
+parse_native_args() {
 
     # Mirror v18.9.1 cli/profile-bootstrap.ts without changing raw OMP_ARGS.
     # Only the first residual token can end global profile extraction at a
@@ -158,6 +175,12 @@ parse_args() {
         normalize_profile "${OMP_PROFILE-${PI_PROFILE-${OMPD_PROFILE-default}}}"
         SELECTED_PROFILE="$NORMALIZED_PROFILE"
     fi
+
+    detect_machine_mode ${residual[@]+"${residual[@]}"}
+}
+
+detect_machine_mode() {
+    local residual=("$@") index arg value can_dispatch
 
     # Resolve command ownership separately: unlike profile bootstrap, the native
     # resolver consumes any successor of --plan before looking for a command.
@@ -251,28 +274,25 @@ prepare_data() {
         [[ -d "$path" && -w "$path" ]] || die "agent directory is not writable: $path"
     done
     AGENT_DIR="$path"
-    seed_config config.yml config.yaml settings.json
-    # Optional native templates; do not replace legacy or alternate spellings.
-    seed_config models.yml models.yaml models.json
-}
-
-seed_config() {
-    local filename="$1" existing
-    [[ -f "$SCRIPT_DIR/config/$filename" ]] || return 0
-    for existing in "$@"; do
-        [[ ! -e "$AGENT_DIR/$existing" && ! -L "$AGENT_DIR/$existing" ]] || return 0
-    done
-    # noclobber also protects a config created concurrently by another launcher.
-    if ! (set -o noclobber; umask 077; cat -- "$SCRIPT_DIR/config/$filename" > "$AGENT_DIR/$filename") 2>/dev/null; then
-        [[ -e "$AGENT_DIR/$filename" || -L "$AGENT_DIR/$filename" ]] || die "could not seed $filename"
+    local template="$SCRIPT_DIR/config/profiles/$SELECTED_PROFILE.yml"
+    [[ -f "$template" ]] || template="$SCRIPT_DIR/config/config.yml"
+    seed_config "$template" config.yml config.yaml settings.json
+    if [[ -f "$SCRIPT_DIR/config/models.yml" ]]; then
+        seed_config "$SCRIPT_DIR/config/models.yml" models.yml models.yaml models.json
     fi
 }
 
-add_overlay() {
-    local host="$1" container="$2"
-    [[ -f "$host" ]] || return 0
-    [[ -r "$host" ]] || die "unreadable overlay: $host"
-    CONFIG_FILES="${CONFIG_FILES:+$CONFIG_FILES:}$container"
+seed_config() {
+    local template="$1" filename="$2" existing
+    shift
+    for existing in "$@"; do
+        [[ ! -e "$AGENT_DIR/$existing" && ! -L "$AGENT_DIR/$existing" ]] || return 0
+    done
+    [[ -f "$template" && -r "$template" ]] || die "missing readable config template: $template"
+    # noclobber also protects a config created concurrently by another launcher.
+    if ! (set -o noclobber; umask 077; cat -- "$template" > "$AGENT_DIR/$filename") 2>/dev/null; then
+        [[ -e "$AGENT_DIR/$filename" || -L "$AGENT_DIR/$filename" ]] || die "could not seed $filename"
+    fi
 }
 
 prepare_display() {
@@ -328,8 +348,8 @@ handle_signal() {
     exit "$status"
 }
 
-main() {
-    parse_args "$@"
+prepare_runtime() {
+    local tool
     for tool in dirname readlink mkdir cat uname date; do
         command -v "$tool" >/dev/null 2>&1 || die "required host tool '$tool' is missing; install it and retry"
     done
@@ -338,6 +358,10 @@ main() {
     command -v docker >/dev/null 2>&1 || die "Docker is not installed or not on PATH. Install/start Docker, then run $SCRIPT_DIR/build."
     docker info >/dev/null 2>&1 || die 'Docker daemon unavailable; start Docker/Docker Desktop and check context/socket permissions'
     docker image inspect "$IMAGE_NAME" >/dev/null 2>&1 || die "image '$IMAGE_NAME' unavailable. Run $SCRIPT_DIR/build; or build/pull the custom OMPD_IMAGE tag."
+    check_mount_path "$SCRIPT_DIR/config"
+}
+
+prepare_workspace() {
     CURRENT_DIR="$(pwd -P)"
     check_mount_path "$CURRENT_DIR"
     local basename="${CURRENT_DIR##*/}" digest
@@ -352,17 +376,10 @@ main() {
         die 'sha256sum or shasum is required'
     fi
     CONTAINER_WORKSPACE="/workspaces/$basename-${digest:0:12}"
-    CONTAINER_NAME="ompd-$(date +%Y%m%d-%H%M%S)-$$-$RANDOM"
-    [[ -f "$SCRIPT_DIR/config/config.yml" && -r "$SCRIPT_DIR/config/config.yml" ]] || die 'missing readable config/config.yml; restore the repository template'
-    check_mount_path "$SCRIPT_DIR/config"
-    CONFIG_MOUNTS=(--mount "type=bind,source=$SCRIPT_DIR/config,target=/config/ompd,readonly")
-    CONFIG_FILES=''
-    add_overlay "$SCRIPT_DIR/config/config.yml" /config/ompd/config.yml
-    add_overlay "$SCRIPT_DIR/config/config.local.yml" /config/ompd/config.local.yml
-    add_overlay "$SCRIPT_DIR/config/profiles/$SELECTED_PROFILE.yml" "/config/ompd/profiles/$SELECTED_PROFILE.yml"
-    prepare_data
-    prepare_display
+}
 
+run_container() {
+    CONTAINER_NAME="ompd-$(date +%Y%m%d-%H%M%S)-$$-$RANDOM"
     local docker_args=(run -i) variable status
     USED_TTY=false
     if [[ -t 0 && -t 1 && "$MACHINE_MODE" == false ]]; then
@@ -375,15 +392,22 @@ main() {
         --cap-add CHOWN --cap-add SETUID --cap-add SETGID
         --mount "type=bind,source=$DATA_DIR,target=/home/coder"
         --mount "type=bind,source=$CURRENT_DIR,target=$CONTAINER_WORKSPACE"
+        --mount "type=bind,source=$SCRIPT_DIR/config,target=/config/ompd,readonly"
         -w "$CONTAINER_WORKSPACE" -e HOME=/home/coder
         -e PATH=/home/coder/.local/bin:/home/coder/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
         -e "TERM=${TERM:-xterm-256color}" -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8
         -e "OMP_PROFILE=$SELECTED_PROFILE" -e "PI_PROFILE=$SELECTED_PROFILE")
-    [[ -z "$CONFIG_FILES" ]] || docker_args+=(-e "PI_CONFIG_FILES=$CONFIG_FILES")
-    for variable in OPENAI_API_KEY OPENAI_CODEX_OAUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN GEMINI_API_KEY GOOGLE_API_KEY OPENROUTER_API_KEY GROQ_API_KEY MISTRAL_API_KEY XAI_API_KEY DEEPSEEK_API_KEY OLLAMA_API_KEY OLLAMA_HOST OLLAMA_BASE_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION AWS_DEFAULT_REGION AWS_PROFILE; do
-        if [[ ${!variable+x} ]]; then docker_args+=(-e "$variable"); fi
+    for variable in \
+        OPENAI_API_KEY OPENAI_CODEX_OAUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN \
+        GEMINI_API_KEY GOOGLE_API_KEY OPENROUTER_API_KEY GROQ_API_KEY MISTRAL_API_KEY \
+        XAI_API_KEY DEEPSEEK_API_KEY OLLAMA_API_KEY OLLAMA_HOST OLLAMA_BASE_URL \
+        AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION \
+        AWS_DEFAULT_REGION AWS_PROFILE; do
+        if [[ ${!variable+x} ]]; then
+            docker_args+=(-e "$variable")
+        fi
     done
-    docker_args+=(${CONFIG_MOUNTS[@]+"${CONFIG_MOUNTS[@]}"} ${DISPLAY_ARGS[@]+"${DISPLAY_ARGS[@]}"} "$IMAGE_NAME" /usr/local/bin/omp ${OMP_ARGS[@]+"${OMP_ARGS[@]}"})
+    docker_args+=(${DISPLAY_ARGS[@]+"${DISPLAY_ARGS[@]}"} "$IMAGE_NAME" /usr/local/bin/omp ${OMP_ARGS[@]+"${OMP_ARGS[@]}"})
     trap cleanup EXIT
     trap 'handle_signal INT 130' INT
     trap 'handle_signal TERM 143' TERM
@@ -401,6 +425,15 @@ main() {
     DOCKER_PID=''
     [[ "$DEBUG_MODE" != true ]] || printf 'Docker exited with status %s; container %s retained if created.\n' "$status" "$CONTAINER_NAME" >&2
     exit "$status"
+}
+
+main() {
+    parse_args "$@"
+    prepare_runtime
+    prepare_workspace
+    prepare_data
+    prepare_display
+    run_container
 }
 
 main "$@"

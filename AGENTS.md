@@ -15,8 +15,9 @@ behavior and do not replace real image builds or runtime checks.
   second browser installation or Bun runtime. Keep robust UID/GID/macOS mapping.
 - Native browser executable lookup honors PUPPETEER_EXECUTABLE_PATH first; point
   it to /usr/local/bin/playwright-chromium. Keep PLAYWRIGHT_BROWSERS_PATH and MCP
-  executable environment aligned. Native browser.headless stays true by default;
-  explicit browser.open({headed:true,...}) needs working X11/XQuartz. Native
+  executable environment aligned. Upstream native browser.headless defaults true;
+  user seed/persisted preferences may override it. Explicit browser.open({headed:true,...})
+  needs working X11/XQuartz. Native
   launch defaults include --no-sandbox; do not claim browser sandbox isolation.
 - config/playwright-mcp.json is preserved optional headed MCP launch config,
   mounted read-only at /config/ompd/playwright-mcp.json. Do not auto-register it,
@@ -45,17 +46,19 @@ behavior and do not replace real image builds or runtime checks.
   native selection means default, not OMPD_PROFILE fallback. Validate before
   seeding; normalize native environment without injecting flags.
 - Seed writable config/models templates once, preserving even empty existing
-  native or legacy equivalents. Never follow symlinked state directories.
+  native or legacy equivalents. Select config/profiles/<profile>.yml when present,
+  otherwise config/config.yml; named seeds are standalone, never YAML-merged.
+  Existing profile config needs no repository template. Missing/unreadable seeds
+  fail only for an uninitialized profile. Never follow symlinked state directories.
   Before testing the persistent-home root with `-L`, repeatedly remove terminal
   slashes and `/.` segments, preserving `/`. Reject the final symlink before
   mkdir/seed/delete; never resolve it first or ban symlinked ancestors.
-- Read-only `/config/ompd` repository mount; native `PI_CONFIG_FILES` order:
-  base config → optional local → optional profile. Explicit native --config
-  follows environment files. Pinned settings.ts splits PI_CONFIG_FILES on
-  path.delimiter (colon in Linux), parses YAML mappings, and lets later overlays
-  win. Native deep objects merge; arrays/scalars replace. No manual YAML
-  merging or injected flags that break subcommands. Overlay values win again
-  after restarting, even over user /settings edits; document this clearly.
+- Repository config is mounted read-only at `/config/ompd` for optional user-managed
+  MCP and explicit native --config paths. Never inject or forward PI_CONFIG_FILES,
+  load config.local.yml, or reapply repository settings at launch. Native /settings
+  and config set changes belong to the selected persistent agent directory and
+  survive restarts. Seed edits affect only uninitialized profiles; no migrations,
+  reseeding, manual YAML merging, or injected flags that break subcommands.
 - Keep host PI_CODING_AGENT_DIR/XDG paths out of the container. Match HOME/PATH
   to the image. Only allowlisted provider env is passed via `-e NAME`, including
   OPENAI_CODEX_OAUTH_TOKEN; never print its value.
@@ -70,19 +73,19 @@ behavior and do not replace real image builds or runtime checks.
   user assets. Refuse linked cleanup roots; never guess internal cache paths.
 - Rely on bundled native task-agent prompts and native model-setting schemas; do not add
   custom role files, plugins, agent-directory seeding/mounts, or parent prompts.
-  Native task batching/async are enabled by default. Base task.maxConcurrency is
-  4 (native default 32), overridable through normal local/profile overlays.
-  Set modelRoles.default to openai/gpt-6.1-sol and task.agentModelOverrides as a
-  string map: scout → openai/gpt-6-luna; reviewer/security-reviewer →
-  openai/gpt-6-astra; task/sonic → openai/gpt-6.1-sol. Preserve cap4. The ollama
-  profile overrides main and all five agents to ollama/gemma4:26b-16k, retaining
-  local-model assignments. Local overlays can customize assignments; profiles win.
-  Native --model changes main, not pinned worker mappings; request-specific worker
-  models can override. A resolved model without credentials may fall back to the
-  parent: local mappings are not an offline/security guarantee.
-  Do not configure reasoning-effort/variant overrides. IDs are user preferences,
-  not runtime-validated availability; confirm with native `./pi -- models` and
-  required provider credentials/Ollama endpoint. No live delegation test is claimed.
+  Native task batching/async are enabled by default. config/config.yml is the
+  user's portable settings template: preserve its modelRoles, worker mappings,
+  reasoning/variant choices, browser preferences, and other values unless asked.
+  Do not hardcode former model assignments or inject concurrency settings.
+  Upstream task.maxConcurrency defaults to 32 when the seed omits it. The standalone
+  ollama seed pins concurrency four and main/all five agents to ollama/gemma4:26b-16k,
+  retaining local-model assignments. Subsequent native settings are authoritative.
+  Native --model changes main, not configured worker mappings; request-specific
+  worker models can override. A resolved model without credentials may fall back
+  to the parent: local mappings are not an offline/security guarantee.
+  Model IDs are user preferences, not runtime-validated availability; confirm with
+  native `./pi -- models` and required credentials/Ollama endpoint. No live delegation
+  test is claimed.
   Reviewer is for patch/code review, not a general oracle. Delegation is not a
   rigid policy guarantee. Native task.isolation.enabled defaults false:
   children share workspace/home; require disjoint edit ownership,
