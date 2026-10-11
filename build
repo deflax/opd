@@ -18,7 +18,7 @@ done
 script_dir=$(CDPATH= cd -P "$(dirname "$script_path")" && pwd)
 
 # Only the first argument selects the base build; remaining args belong to Docker.
-base_image=${OMPD_BASE_IMAGE:-ompd-base:latest}
+base_image=${OPD_BASE_IMAGE:-opd-base:latest}
 if [[ ${1:-} = --base ]]; then
     shift
     exec docker build \
@@ -48,7 +48,7 @@ fi
 
 exec docker build \
     --file "$script_dir/Dockerfile" \
-    --tag "${OMPD_IMAGE:-ompd:latest}" \
+    --tag "${OPD_IMAGE:-opd:latest}" \
     --build-arg "BASE_IMAGE=$base_image" \
     --build-arg "USER_UID=$user_uid" \
     --build-arg "USER_GID=$user_gid" \

@@ -1,7 +1,7 @@
 # Maintainer context
 
 Small Bash/Docker wrapper for compiled oh-my-pi `omp`, pinned to v18.9.1.
-`build`/`Dockerfile` own the image; `pi` owns host launch; `clearcache` deletes
+`build`/`Dockerfile` own the image; `opd` owns host launch; `clearcache` deletes
 only persistent `.cache` contents. Validate script syntax with `bash -n` and
 the hermetic wrapper test suite with `python3 tests/run`; these mock Docker
 behavior and do not replace real image builds or runtime checks.
@@ -22,7 +22,7 @@ behavior and do not replace real image builds or runtime checks.
 - Playwright MCP is installed but not auto-registered; its configuration remains
   user-managed. Do not seed mcp.json, inject native config, or copy MCP
   sandbox/software flags into native browser settings. No invented browser.args.
-- Empty OMPD_DISPLAY disables forwarding and XQuartz startup/access side effects.
+- Empty OPD_DISPLAY disables forwarding and XQuartz startup/access side effects.
   Headed macOS requires Docker Desktop networking, XQuartz network clients, and
   local connection permissions. Verify both amd64 and arm64 with actual builds;
   source/hermetic checks and prior images' success do not validate the new image.
@@ -45,9 +45,9 @@ behavior and do not replace real image builds or runtime checks.
   `--plan` protects only value-like tokens; `--goal` protects even rejected
   flag-looking objectives. Preserve literal argv and leave validation to native.
   Reject conflicting normalized wrapper/native names. OMP_PROFILE wins whenever defined, even
-  empty; PI_PROFILE is used only if OMP_PROFILE is undefined. A defined empty
-  native selection means default, not OMPD_PROFILE fallback. Validate before
-  seeding; normalize native environment without injecting flags.
+  empty; otherwise use OPD_PROFILE. Legacy PI_* profile variables are neither
+  consumed nor forwarded. A defined empty native selection means default, not
+  OPD_PROFILE fallback. Validate before seeding; normalize native environment without injecting flags.
 - Seed writable config/models templates once, preserving even empty existing
   native or legacy equivalents. Select config/profiles/<profile>.yml when present,
   otherwise config/config.yml; named seeds are standalone, never YAML-merged.
@@ -56,7 +56,7 @@ behavior and do not replace real image builds or runtime checks.
   Before testing the persistent-home root with `-L`, repeatedly remove terminal
   slashes and `/.` segments, preserving `/`. Reject the final symlink before
   mkdir/seed/delete; never resolve it first or ban symlinked ancestors.
-- Repository config is mounted read-only at `/config/ompd` for optional user-managed
+- Repository config is mounted read-only at `/config/opd` for optional user-managed
   MCP and explicit native --config paths. Never inject or forward PI_CONFIG_FILES,
   load config.local.yml, or reapply repository settings at launch. Native /settings
   and config set changes belong to the selected persistent agent directory and
@@ -87,7 +87,7 @@ behavior and do not replace real image builds or runtime checks.
   worker models can override. A resolved model without credentials may fall back
   to the parent: local mappings are not an offline/security guarantee.
   Model IDs are user preferences, not runtime-validated availability; confirm with
-  native `./pi -- models` and required credentials/Ollama endpoint. No live delegation
+  native `./opd -- models` and required credentials/Ollama endpoint. No live delegation
   test is claimed.
   Reviewer is for patch/code review, not a general oracle. Delegation is not a
   rigid policy guarantee. Native task.isolation.enabled defaults false:

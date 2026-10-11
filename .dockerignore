@@ -7,12 +7,16 @@ data
 .pi
 .ompd
 .ompd.*
+.opd
+.opd.*
 
 # Generated/local configuration and secrets.
 config
 .config
 ompd.conf
 ompd.env
+opd.conf
+opd.env
 .env
 .env.*
 *.local

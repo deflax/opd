@@ -31,7 +31,7 @@ if daemon_status:
     sys.stderr.write('Cannot connect to the Docker daemon; is it running?\n')
     sys.exit(daemon_status)
 if image_status and (args[:2] == ['image', 'inspect'] or args[:1] == ['inspect']):
-    sys.stderr.write('Error response from daemon: No such image: ompd:latest\n')
+    sys.stderr.write('Error response from daemon: No such image: opd:latest\n')
     sys.exit(image_status)
 if args[:1] == ['build']:
     sys.exit(int(os.environ.get('MOCK_DOCKER_BUILD_STATUS', '0')))
@@ -110,7 +110,7 @@ class LauncherTests(unittest.TestCase):
         preferred = Path('/tmp/opencode')
         temp_root = (str(preferred) if preferred.is_dir() and
                      os.access(preferred, os.W_OK | os.X_OK) else tempfile.gettempdir())
-        cls.suite = tempfile.TemporaryDirectory(prefix='ompd-tests-', dir=temp_root)
+        cls.suite = tempfile.TemporaryDirectory(prefix='opd-tests-', dir=temp_root)
         cls.root = Path(cls.suite.name)
         cls.snapshot = cls.root / 'snapshot'
         shutil.copytree(SOURCE, cls.snapshot,
@@ -150,7 +150,7 @@ class LauncherTests(unittest.TestCase):
             'MOCK_DOCKER_LOG': str(self.log),
         }
 
-    def invoke(self, *args, script='pi', cwd=None, env=None):
+    def invoke(self, *args, script='opd', cwd=None, env=None):
         path = self.repo / script
         self.assertTrue(path.is_file(), f'Missing required executable: {script}')
         self.assertTrue(os.access(path, os.X_OK), f'{script} must be executable')
@@ -174,7 +174,7 @@ class LauncherTests(unittest.TestCase):
         before = termios.tcgetattr(slave)
         try:
             process = subprocess.Popen(
-                [str(self.repo / 'pi'), *args], cwd=self.cwd,
+                [str(self.repo / 'opd'), *args], cwd=self.cwd,
                 env={**self.env, **(env or {})}, stdin=slave, stdout=slave,
                 stderr=subprocess.PIPE, start_new_session=True)
             if send_signal is not None:
@@ -263,7 +263,7 @@ with open({str(host_calls)!r}, 'a') as log:
         quartz.mkdir()
         socket = self.case / 'X11-unix'
         socket.mkdir()
-        launcher = self.repo / 'pi'
+        launcher = self.repo / 'opd'
         text = launcher.read_text()
         substitutions = [
             ('-d /Applications/Utilities/XQuartz.app', f'-d "{quartz}"', 1),
@@ -308,7 +308,7 @@ with open({str(host_calls)!r}, 'a') as log:
             with self.subTest(override=override):
                 self.reset_log()
                 host_calls.unlink(missing_ok=True)
-                call = self.launch(env={'DISPLAY': ':9', 'OMPD_DISPLAY': override})
+                call = self.launch(env={'DISPLAY': ':9', 'OPD_DISPLAY': override})
                 self.assertIn('DISPLAY=' + override, values(call, '-e', '--env'))
                 calls = [json.loads(line) for line in host_calls.read_text().splitlines()]
                 self.assertEqual([entry['args'] for entry in calls],
@@ -319,7 +319,7 @@ with open({str(host_calls)!r}, 'a') as log:
         host_calls, socket = self.mock_display('Darwin')
         authority = self.home / 'test.xauth'
         authority.write_bytes(b'synthetic authority\n')
-        call = self.launch(env={'DISPLAY': ':9', 'OMPD_DISPLAY': '',
+        call = self.launch(env={'DISPLAY': ':9', 'OPD_DISPLAY': '',
                                 'XAUTHORITY': str(authority)})
         self.assertFalse(host_calls.exists(), 'Disabled display must not open XQuartz or invoke xhost')
         self.assertFalse(any(item.split('=', 1)[0] in ('DISPLAY', 'XAUTHORITY')
@@ -336,7 +336,7 @@ with open({str(host_calls)!r}, 'a') as log:
                 self.reset_log()
                 env = {'DISPLAY': ':4', 'XAUTHORITY': str(authority)}
                 if override is not None:
-                    env['OMPD_DISPLAY'] = override
+                    env['OPD_DISPLAY'] = override
                 call = self.launch(env=env)
                 self.assertIn(f'type=bind,source={socket},target=/tmp/.X11-unix,readonly',
                               values(call, '--mount'))
@@ -350,7 +350,7 @@ with open({str(host_calls)!r}, 'a') as log:
         host_calls, socket = self.mock_display('Linux')
         authority = self.home / 'test.xauth'
         authority.write_bytes(b'synthetic authority\n')
-        call = self.launch(env={'DISPLAY': ':4', 'OMPD_DISPLAY': '',
+        call = self.launch(env={'DISPLAY': ':4', 'OPD_DISPLAY': '',
                                 'XAUTHORITY': str(authority)})
         self.assertFalse(any(item.split('=', 1)[0] in ('DISPLAY', 'XAUTHORITY')
                              for item in values(call, '-e', '--env')))
@@ -360,16 +360,16 @@ with open({str(host_calls)!r}, 'a') as log:
         self.assertFalse(host_calls.exists())
 
     def test_help_never_calls_docker(self):
-        result = self.invoke('--pi-help')
+        result = self.invoke('--opd-help')
         self.assertEqual(result.returncode, 0)
-        self.assertIn(b'--pi-', result.stdout + result.stderr)
-        self.assertNotIn(b'--pi-web', result.stdout + result.stderr)
-        self.assertNotIn(b'--pi-port', result.stdout + result.stderr)
+        self.assertIn(b'--opd-', result.stdout + result.stderr)
+        self.assertNotIn(b'--opd-web', result.stdout + result.stderr)
+        self.assertNotIn(b'--opd-port', result.stdout + result.stderr)
         self.assertEqual(self.calls(), [])
 
     def test_unknown_web_port_arguments_forward_without_wrapper_effects(self):
-        scenarios = [['--pi-web'], ['--pi-web=value'],
-                     ['--pi-port', '8080'], ['--pi-port=8080']]
+        scenarios = [['--opd-web'], ['--opd-web=value'],
+                     ['--opd-port', '8080'], ['--opd-port=8080']]
         for args in scenarios:
             for separator in ([], ['--']):
                 with self.subTest(args=args, separator=separator):
@@ -377,7 +377,7 @@ with open({str(host_calls)!r}, 'a') as log:
                     call = self.launch(*separator, *args)
                     command = call.index('/usr/local/bin/omp')
                     self.assertEqual(call[command + 1:], args)
-                    docker_options = call[:call.index('ompd:latest')]
+                    docker_options = call[:call.index('opd:latest')]
                     self.assertIn('--rm', docker_options)
                     self.assertEqual(values(docker_options, '--network'), ['host'])
                     self.assertFalse(any(
@@ -387,17 +387,17 @@ with open({str(host_calls)!r}, 'a') as log:
 
     def test_literal_arguments_after_separator(self):
         args = ['space argument', '', '$HOME', '$(touch should-not-exist)',
-                '*.py', 'line\nbreak', 'quote\"single\'', '--pi-debug']
+                '*.py', 'line\nbreak', 'quote\"single\'', '--opd-debug']
         call = self.launch('--', *args)
-        image = call.index('ompd:latest')
+        image = call.index('opd:latest')
         self.assertEqual(Path(call[image + 1]).name, 'omp')
         self.assertEqual(call[image + 2:], args)
         self.assertFalse((self.cwd / 'should-not-exist').exists())
-        self.assertIn('--rm', call, 'A literal --pi-debug must not change wrapper options')
+        self.assertIn('--rm', call, 'A literal --opd-debug must not change wrapper options')
 
     def test_image_mounts_security_and_non_tty(self):
         call = self.launch()
-        command = call[call.index('ompd:latest') + 1:]
+        command = call[call.index('opd:latest') + 1:]
         self.assertEqual(len(command), 1)
         self.assertEqual(Path(command[0]).name, 'omp')
         mounted = mounts(call)
@@ -434,13 +434,13 @@ with open({str(host_calls)!r}, 'a') as log:
         self.assertNotEqual(values(third, '-w', '--workdir'), original)
 
     def test_debug_status_and_diagnostics(self):
-        result = self.invoke('--pi-debug', env={'MOCK_DOCKER_STATUS': '37'})
+        result = self.invoke('--opd-debug', env={'MOCK_DOCKER_STATUS': '37'})
         self.assertEqual(result.returncode, 37)
         self.assertEqual(result.stdout, b'')
         self.assertTrue(result.stderr, 'Debug diagnostics should go to stderr')
         call, _ = self.run_call()
         self.assertNotIn('--rm', call)
-        self.assertNotIn('--pi-debug', call)
+        self.assertNotIn('--opd-debug', call)
 
     def test_protocol_modes_suppress_tty_on_actual_terminal(self):
         scenarios = [[], ['acp'], ['--profile', 'work', 'acp'],
@@ -525,7 +525,7 @@ with open({str(host_calls)!r}, 'a') as log:
         for terminal in (False, True):
             with self.subTest(terminal=terminal):
                 self.reset_log()
-                env = {'OMPD_NO_BANNER': '1', 'MOCK_DOCKER_STDOUT': 'native\n',
+                env = {'OPD_NO_BANNER': '1', 'MOCK_DOCKER_STDOUT': 'native\n',
                        'MOCK_DOCKER_STATUS': '37'}
                 if terminal:
                     result, _, _ = self.invoke_tty('--mode', 'rpc', env=env)
@@ -577,7 +577,7 @@ with open({str(host_calls)!r}, 'a') as log:
         for profile in (None, 'seeded-native'):
             with self.subTest(profile=profile):
                 base.write_bytes(content)
-                args = ['--pi-profile', profile] if profile else []
+                args = ['--opd-profile', profile] if profile else []
                 self.reset_log()
                 call = self.launch(*args, env={'PI_CONFIG_FILES': '/missing/host-overlay.yml'})
                 config = self.seeded_config(profile)
@@ -596,9 +596,9 @@ with open({str(host_calls)!r}, 'a') as log:
                                      for item in values(call, '-e', '--env')))
 
     def test_wrapper_named_profile(self):
-        call = self.launch('--pi-profile', 'work')
+        call = self.launch('--opd-profile', 'work')
         self.seeded_config('work')
-        self.assertNotIn('--pi-profile', call)
+        self.assertNotIn('--opd-profile', call)
         self.assertFalse(self.agent().exists(), 'Named profile must not seed the default agent')
 
     def test_native_named_profile(self):
@@ -609,22 +609,21 @@ with open({str(host_calls)!r}, 'a') as log:
         self.assertEqual(call[profile_index + 1], 'work')
 
     def test_environment_named_profile(self):
-        self.launch(env={'PI_PROFILE': 'environment'})
+        self.launch(env={'OMP_PROFILE': 'environment'})
         self.seeded_config('environment')
         self.assertFalse(self.agent().exists())
 
     def test_last_native_profile_and_environment_precedence(self):
         scenarios = [
             (['--profile', 'first', '--profile=last'],
-             {'OMP_PROFILE': 'omp-env', 'PI_PROFILE': 'pi-env', 'OMPD_PROFILE': 'fallback'}, 'last'),
+             {'OMP_PROFILE': 'omp-env', 'PI_PROFILE': 'pi-env', 'OPD_PROFILE': 'fallback'}, 'last'),
             (['--profile=first', '--profile', 'last'],
              {'OMP_PROFILE': 'omp-env', 'PI_PROFILE': 'pi-env'}, 'last'),
-            ([], {'OMP_PROFILE': 'omp-env', 'PI_PROFILE': 'pi-env', 'OMPD_PROFILE': 'fallback'}, 'omp-env'),
-            ([], {'PI_PROFILE': 'pi-env', 'OMPD_PROFILE': 'fallback'}, 'pi-env'),
-            ([], {'OMPD_PROFILE': 'fallback'}, 'fallback'),
-            (['--pi-profile', 'wrapper'],
+            ([], {'OMP_PROFILE': 'omp-env', 'PI_PROFILE': 'pi-env', 'OPD_PROFILE': 'fallback'}, 'omp-env'),
+            ([], {'PI_PROFILE': 'pi-env', 'OPD_PROFILE': 'fallback'}, 'fallback'),
+            (['--opd-profile', 'wrapper'],
              {'OMP_PROFILE': 'omp-env', 'PI_PROFILE': 'pi-env'}, 'wrapper'),
-            (['--pi-profile', 'last', '--profile', 'first', '--profile=last'], {}, 'last'),
+            (['--opd-profile', 'last', '--profile', 'first', '--profile=last'], {}, 'last'),
         ]
         for args, env, expected in scenarios:
             with self.subTest(args=args, env=env):
@@ -636,27 +635,27 @@ with open({str(host_calls)!r}, 'a') as log:
                 assignments = dict(item.split('=', 1) for item in values(call, '-e', '--env')
                                    if '=' in item)
                 self.assertEqual(assignments['OMP_PROFILE'], expected)
-                self.assertEqual(assignments['PI_PROFILE'], expected)
+                self.assertNotIn('PI_PROFILE', assignments)
                 self.seeded_config(expected)
                 self.assertEqual(sorted((omp / 'profiles').iterdir()),
                                  [omp / 'profiles' / expected])
 
     def test_profile_normalization_and_defined_empty_precedence(self):
         scenarios = [
-            ([], {'OMP_PROFILE': '', 'PI_PROFILE': 'legacy', 'OMPD_PROFILE': 'fallback'}, 'default'),
+            ([], {'OMP_PROFILE': '', 'PI_PROFILE': 'legacy', 'OPD_PROFILE': 'fallback'}, 'default'),
             ([], {'OMP_PROFILE': ' \t\n', 'PI_PROFILE': 'legacy'}, 'default'),
-            ([], {'PI_PROFILE': '', 'OMPD_PROFILE': 'fallback'}, 'default'),
-            ([], {'OMPD_PROFILE': ''}, 'default'),
+            ([], {'PI_PROFILE': '', 'OPD_PROFILE': 'fallback'}, 'fallback'),
+            ([], {'OPD_PROFILE': ''}, 'default'),
             ([], {'OMP_PROFILE': 'default', 'PI_PROFILE': 'legacy'}, 'default'),
             ([], {'OMP_PROFILE': ' \twork\r\n '}, 'work'),
-            ([], {'PI_PROFILE': ' work '}, 'work'),
-            ([], {'OMPD_PROFILE': ' work '}, 'work'),
-            (['--pi-profile', ''], {'OMP_PROFILE': 'environment'}, 'default'),
-            (['--pi-profile', ' \t '], {'OMP_PROFILE': 'environment'}, 'default'),
+            ([], {'PI_PROFILE': ' work '}, 'default'),
+            ([], {'OPD_PROFILE': ' work '}, 'work'),
+            (['--opd-profile', ''], {'OMP_PROFILE': 'environment'}, 'default'),
+            (['--opd-profile', ' \t '], {'OMP_PROFILE': 'environment'}, 'default'),
             (['--profile', ' \t '], {'OMP_PROFILE': 'environment'}, 'default'),
             (['--profile= default '], {'OMP_PROFILE': 'environment'}, 'default'),
-            (['--pi-profile', ' work ', '--profile', '\twork\n'], {}, 'work'),
-            (['--pi-profile', '', '--profile', 'default'], {}, 'default'),
+            (['--opd-profile', ' work ', '--profile', '\twork\n'], {}, 'work'),
+            (['--opd-profile', '', '--profile', 'default'], {}, 'default'),
             (['--profile', 'INVALID', '--profile=work'], {}, 'work'),
             (['--profile=first', '--profile', 'default'], {'OMP_PROFILE': 'environment'}, 'default'),
         ]
@@ -670,7 +669,7 @@ with open({str(host_calls)!r}, 'a') as log:
                 assignments = dict(item.split('=', 1) for item in values(call, '-e', '--env')
                                    if '=' in item)
                 self.assertEqual(assignments['OMP_PROFILE'], expected)
-                self.assertEqual(assignments['PI_PROFILE'], expected)
+                self.assertNotIn('PI_PROFILE', assignments)
                 self.seeded_config(None if expected == 'default' else expected)
                 if expected == 'default':
                     self.assertFalse((omp / 'profiles').exists())
@@ -785,11 +784,11 @@ with open({str(host_calls)!r}, 'a') as log:
 
     def test_native_profile_conflicts_use_native_or_reject_explicitly(self):
         scenarios = [
-            (['--pi-profile', 'wrapper', '--profile', 'native'], {}),
-            (['--profile', 'native', '--pi-profile', 'wrapper'], {}),
-            (['--profile', 'native'], {'PI_PROFILE': 'environment'}),
-            (['--pi-profile', 'wrapper', '--profile', 'native'],
-             {'PI_PROFILE': 'environment'}),
+            (['--opd-profile', 'wrapper', '--profile', 'native'], {}),
+            (['--profile', 'native', '--opd-profile', 'wrapper'], {}),
+            (['--profile', 'native'], {'OMP_PROFILE': 'environment'}),
+            (['--opd-profile', 'wrapper', '--profile', 'native'],
+             {'OMP_PROFILE': 'environment'}),
         ]
         for args, env in scenarios:
             with self.subTest(args=args, env=env):
@@ -810,13 +809,13 @@ with open({str(host_calls)!r}, 'a') as log:
                     call, _ = self.run_call()
                     self.seeded_config('native')
                     self.assertEqual(values(call, '--profile'), ['native'])
-                    self.assertNotIn('--pi-profile', call)
+                    self.assertNotIn('--opd-profile', call)
                     for profile in (None, 'wrapper', 'environment'):
                         self.assertFalse(self.agent(profile).exists(),
                                          'Native profile must win over conflicting selectors')
 
     def test_wrapper_profile_overrides_environment_or_rejects(self):
-        result = self.invoke('--pi-profile', 'wrapper', env={'PI_PROFILE': 'environment'})
+        result = self.invoke('--opd-profile', 'wrapper', env={'OMP_PROFILE': 'environment'})
         self.assertEqual(result.stdout, b'')
         if result.returncode:
             self.assertIn(b'profile', result.stderr.lower())
@@ -833,7 +832,7 @@ with open({str(host_calls)!r}, 'a') as log:
         named = self.repo / 'config' / 'profiles' / 'work.yml'
         base.write_text('task:\n  maxConcurrency: 4\n')
         named.write_text('browser:\n  enabled: false\n')
-        self.launch('--pi-profile', 'work')
+        self.launch('--opd-profile', 'work')
         saved = self.seeded_config('work')
         self.assertEqual(saved.read_bytes(), named.read_bytes(),
                          'A named seed is standalone, not merged with the base')
@@ -843,7 +842,7 @@ with open({str(host_calls)!r}, 'a') as log:
         base.unlink()
         named.unlink()
         self.reset_log()
-        call = self.launch('--pi-profile', 'work')
+        call = self.launch('--opd-profile', 'work')
         self.assertEqual(saved.read_bytes(), customized,
                          'Saved native settings need no repository template on restart')
         self.assertFalse(any(item.split('=', 1)[0] == 'PI_CONFIG_FILES'
@@ -851,7 +850,7 @@ with open({str(host_calls)!r}, 'a') as log:
 
     def test_new_profile_requires_a_readable_seed(self):
         (self.repo / 'config' / 'config.yml').unlink()
-        result = self.invoke('--pi-profile', 'unseeded')
+        result = self.invoke('--opd-profile', 'unseeded')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b'config template', result.stderr)
         self.assertEqual(result.stdout, b'')
@@ -861,7 +860,7 @@ with open({str(host_calls)!r}, 'a') as log:
     def test_models_seed_preserves_existing_equivalents(self):
         template = self.repo / 'config' / 'models.yml'
         template.write_text('providers: {}\n')
-        self.launch('--pi-profile', 'fresh-models')
+        self.launch('--opd-profile', 'fresh-models')
         self.assertEqual((self.agent('fresh-models') / 'models.yml').read_bytes(),
                          template.read_bytes())
         for index, name in enumerate(('models.yml', 'models.yaml', 'models.json')):
@@ -872,7 +871,7 @@ with open({str(host_calls)!r}, 'a') as log:
                 existing = agent / name
                 existing.write_bytes(b'')
                 self.reset_log()
-                self.launch('--pi-profile', profile)
+                self.launch('--opd-profile', profile)
                 self.assertEqual(existing.read_bytes(), b'')
                 self.assertEqual(sorted(path.name for path in agent.glob('models.*')), [name])
 
@@ -882,7 +881,7 @@ with open({str(host_calls)!r}, 'a') as log:
         missing = self.case / 'missing-config.yml'
         existing = agent / 'config.yaml'
         existing.symlink_to(missing)
-        self.launch('--pi-profile', 'linked-file')
+        self.launch('--opd-profile', 'linked-file')
         self.assertTrue(existing.is_symlink())
         self.assertFalse(missing.exists())
         self.assertFalse((agent / 'config.yml').exists())
@@ -899,14 +898,14 @@ with open({str(host_calls)!r}, 'a') as log:
                 content = b''
                 config.write_bytes(content)
                 self.reset_log()
-                self.launch('--pi-profile', 'keep')
+                self.launch('--opd-profile', 'keep')
                 self.assertEqual(config.read_bytes(), content)
                 self.assertEqual(sorted(p.name for p in agent.iterdir()
                                         if p.name in ('config.yml', 'config.yaml', 'settings.json')),
                                  [name], 'Do not seed a competing config over existing settings')
 
     def test_rejects_profile_traversal_before_docker(self):
-        for flag in ('--profile', '--pi-profile'):
+        for flag in ('--profile', '--opd-profile'):
             for name in ('../escape', '/tmp/escape', 'nested/name', '..'):
                 with self.subTest(flag=flag, name=name):
                     self.reset_log()
@@ -916,7 +915,7 @@ with open({str(host_calls)!r}, 'a') as log:
                     self.assertTrue(result.stderr)
 
     def test_valid_profile_names(self):
-        for flag in ('--profile', '--pi-profile'):
+        for flag in ('--profile', '--opd-profile'):
             for name in ('work', 'work.v2', 'work_-2', '0', 'a' * 64):
                 with self.subTest(flag=flag, name=name):
                     self.reset_log()
@@ -932,7 +931,7 @@ with open({str(host_calls)!r}, 'a') as log:
                    *[f'lpt{digit}' for digit in range(10)],
                    *[f'lpt{digit}.suffix' for digit in range(10)]]
         for name in invalid:
-            for selector in ('--profile', '--pi-profile', 'OMP_PROFILE', 'PI_PROFILE', 'OMPD_PROFILE'):
+            for selector in ('--profile', '--opd-profile', 'OMP_PROFILE', 'OPD_PROFILE'):
                 with self.subTest(name=name, selector=selector):
                     self.reset_log()
                     args = [selector, name] if selector.startswith('--') else []
@@ -970,7 +969,7 @@ with open({str(host_calls)!r}, 'a') as log:
 
     def test_symlinked_launcher_uses_real_repository(self):
         link = self.case / 'launcher-link'
-        link.symlink_to(self.repo / 'pi')
+        link.symlink_to(self.repo / 'opd')
         chained = self.case / 'launcher-chain'
         chained.symlink_to(link.name)
         call = self.launch(script=str(chained))
@@ -995,7 +994,7 @@ with open({str(host_calls)!r}, 'a') as log:
                 linked = data / relative
                 linked.parent.mkdir(parents=True)
                 linked.symlink_to(outside, target_is_directory=True)
-                result = self.invoke(*(['--pi-profile', profile] if profile else []))
+                result = self.invoke(*(['--opd-profile', profile] if profile else []))
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(b'symlink', result.stderr.lower())
                 self.assertEqual(result.stdout, b'')
@@ -1005,7 +1004,7 @@ with open({str(host_calls)!r}, 'a') as log:
 
     def test_terminal_home_spellings_refuse_symlinks_without_seeding_or_cleanup(self):
         suffixes = ('', '/', '/.', '/./', '///', '/././', '///.//.///')
-        for script, args in (('pi', []), ('clearcache', []),
+        for script, args in (('opd', []), ('clearcache', []),
                              ('clearcache', ['--dry-run'])):
             for index, suffix in enumerate(suffixes):
                 with self.subTest(script=script, args=args, suffix=suffix):
@@ -1017,11 +1016,11 @@ with open({str(host_calls)!r}, 'a') as log:
                     linked = self.case / f'linked-{script}-{len(args)}-{index}'
                     linked.symlink_to(outside, target_is_directory=True)
                     result = self.invoke(*args, script=script,
-                                         env={'OMPD_DATA_DIR': str(linked) + suffix})
+                                         env={'OPD_DATA_DIR': str(linked) + suffix})
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(b'symlink', result.stderr.lower())
                     self.assertEqual(result.stdout, b'')
-                    if script == 'pi':
+                    if script == 'opd':
                         self.assertFalse(any(call[:1] == ['run'] for call, _ in self.calls()))
                     else:
                         self.assertEqual(self.calls(), [])
@@ -1033,7 +1032,7 @@ with open({str(host_calls)!r}, 'a') as log:
 
     def test_terminal_home_spellings_accept_real_directories(self):
         suffixes = ('', '/', '/.', '/./', '///', '/././', '///.//.///')
-        for script in ('pi', 'clearcache'):
+        for script in ('opd', 'clearcache'):
             for index, suffix in enumerate(suffixes):
                 with self.subTest(script=script, suffix=suffix):
                     self.reset_log()
@@ -1046,10 +1045,10 @@ with open({str(host_calls)!r}, 'a') as log:
                         disposable.parent.mkdir()
                         disposable.write_bytes(b'disposable\n')
                     result = self.invoke(script=script,
-                                         env={'OMPD_DATA_DIR': str(data) + suffix})
+                                         env={'OPD_DATA_DIR': str(data) + suffix})
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(sentinel.read_bytes(), b'real home sentinel\n')
-                    if script == 'pi':
+                    if script == 'opd':
                         self.assertEqual(result.stdout, b'')
                         call, _ = self.run_call()
                         self.assertEqual(mounts(call).get('/home/coder'), data.resolve())
@@ -1060,15 +1059,15 @@ with open({str(host_calls)!r}, 'a') as log:
                         self.assertEqual(self.calls(), [])
 
     def test_terminal_filesystem_root_spellings_remain_refused(self):
-        for script in ('pi', 'clearcache'):
+        for script in ('opd', 'clearcache'):
             for root in ('/', '//', '/.', '/./', '///.//.///'):
                 with self.subTest(script=script, root=root):
                     self.reset_log()
-                    result = self.invoke(script=script, env={'OMPD_DATA_DIR': root})
+                    result = self.invoke(script=script, env={'OPD_DATA_DIR': root})
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(b'refusing', result.stderr.lower())
                     self.assertEqual(result.stdout, b'')
-                    if script == 'pi':
+                    if script == 'opd':
                         self.assertFalse(any(call[:1] == ['run'] for call, _ in self.calls()))
                     else:
                         self.assertEqual(self.calls(), [])
@@ -1079,7 +1078,7 @@ with open({str(host_calls)!r}, 'a') as log:
         calls = [args for args, _ in self.calls() if args[:1] == ['build']]
         self.assertEqual(len(calls), 1)
         call = calls[0]
-        self.assertIn('ompd:latest', values(call, '-t', '--tag'))
+        self.assertIn('opd:latest', values(call, '-t', '--tag'))
         build_args = values(call, '--build-arg')
         uid, gid = (1000, 1000) if sys.platform == 'darwin' else (os.getuid(), os.getgid())
         self.assertIn('USER_UID=' + str(uid), build_args)
@@ -1189,7 +1188,7 @@ with open({str(host_calls)!r}, 'a') as log:
         for root, message in ((str(linked_home), b'symlink'),
                               (str(data), b'symlink'), ('/', b'refusing')):
             with self.subTest(root=root):
-                result = self.invoke(script='clearcache', env={'OMPD_DATA_DIR': root})
+                result = self.invoke(script='clearcache', env={'OPD_DATA_DIR': root})
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr.lower())
                 self.assertEqual(sentinel.read_bytes(), b'outside cache must survive\n')

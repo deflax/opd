@@ -1,4 +1,4 @@
-# ompd
+# opd
 
 Docker wrapper for native `omp`, pinned to **v18.9.1**.
 
@@ -6,7 +6,7 @@ Official upstream: [release](https://github.com/can1357/oh-my-pi/releases/tag/v1
 [source](https://github.com/can1357/oh-my-pi/tree/v18.9.1), and
 [pinned installer](https://github.com/can1357/oh-my-pi/blob/v18.9.1/scripts/install.sh).
 
-`./build` creates the image. `./pi` runs `omp` inside it with the current
+`./build` creates the image. `./opd` runs `omp` inside it with the current
 project mounted under `/workspaces/...` and persistent state in `data/`.
 
 ## Quick start
@@ -15,27 +15,41 @@ On each machine, clone this repository, then:
 
 ```bash
 ./build
-./pi -- login   # Configure provider authentication through native omp.
-./pi
+./opd -- login   # Configure provider authentication through native omp.
+./opd
 
 # Optional: install the launcher on PATH.
 mkdir -p ~/.local/bin
-ln -s "$(pwd -P)/pi" ~/.local/bin/pi
+ln -s "$(pwd -P)/opd" ~/.local/bin/opd
 ```
 
 The repository supplies initial settings, not credentials. Each clone keeps its
 own provider authentication and subsequent settings in its persistent `data/`
 home. Do not commit or copy that home as part of the configuration template.
 
+## Rename from ompd
+
+The project executable and wrapper interface are now named `opd`. The former
+`pi` launcher, `--pi-*` flags, and `OMPD_*` variables have no compatibility
+aliases; use `opd`, `--opd-*`, and `OPD_*` instead. Default image tags are now
+`opd:latest` and `opd-base:latest`, so rebuild the images after upgrading.
+Existing persistent data is unchanged. User-managed MCP configuration and
+explicit native config paths remain opt-in; repository config is available at
+`/config/opd`.
+
+Legacy `PI_*` host settings are not consumed or forwarded; use `OMP_PROFILE`
+for native profile selection. The upstream installer's build-time
+`PI_INSTALL_DIR` is unrelated to the wrapper interface.
+
 Common calls:
 
 ```bash
-pi -- --help
-pi -- --print 'Explain this project'
-pi -- --mode rpc
-pi --pi-profile work
-pi --profile work
-printf 'Explain this project\n' | pi -- --print
+opd -- --help
+opd -- --print 'Explain this project'
+opd -- --mode rpc
+opd --opd-profile work
+opd --profile work
+printf 'Explain this project\n' | opd -- --print
 ```
 
 `--` stops wrapper parsing. Everything after it is passed to native `omp`.
@@ -52,7 +66,7 @@ not permanently disable a later `text` or `rpc-ui` mode. `--print`/`-p` and the
 `acp` command always suppress the TTY, even with a later `--mode text`. Tokens
 used as option values or passed after native `--` do not select a mode.
 
-Interactive launches show a custom `ompd` ASCII logo in the OCD style when
+Interactive launches show a custom `opd` ASCII logo in the OCD style when
 stderr is also a terminal, then pause for two seconds before starting omp.
 Launch details report the image/container, selected
 profile and persistent state path, terminal allocation, cleanup policy,
@@ -62,16 +76,16 @@ and host networking. Repository config is not a recurring settings overlay.
 All startup diagnostics go to stderr, leaving native print/RPC/ACP stdout
 untouched. The logo is omitted for print/protocol modes and non-terminal
 launches. Prompts, native arguments, full Docker commands, and credential values
-are never printed. Set `OMPD_NO_BANNER=1` to suppress both the logo and launch
-details; explicit `--pi-debug` inspection hints remain available.
+are never printed. Set `OPD_NO_BANNER=1` to suppress both the logo and launch
+details; explicit `--opd-debug` inspection hints remain available.
 
 Wrapper options:
 
 | Option | Behavior |
 | --- | --- |
-| `--pi-help` | Show wrapper help without Docker |
-| `--pi-profile NAME` | Select native profile state and its first-launch config seed |
-| `--pi-debug` | Keep the container and print inspect/log/remove hints |
+| `--opd-help` | Show wrapper help without Docker |
+| `--opd-profile NAME` | Select native profile state and its first-launch config seed |
+| `--opd-debug` | Keep the container and print inspect/log/remove hints |
 
 ## Build
 
@@ -82,7 +96,7 @@ Requirements: Docker, Bash, and `sha256sum` or `shasum`.
 ./build --no-cache                       # Reinstall omp without rebuilding Debian/tools
 ./build --base                          # Rebuild the Debian/toolchain image only
 ./build                                 # Build omp on the updated base
-OMPD_IMAGE=my-ompd ./build
+OPD_IMAGE=my-opd ./build
 ./build --build-arg USER_UID=1000 --build-arg USER_GID=1000
 ```
 
@@ -92,9 +106,9 @@ Existing files under `data/` must be writable by the image user.
 
 The image is built from two separate Dockerfiles:
 
-- `Dockerfile.base` builds `ompd-base:latest` from Debian, including the development
+- `Dockerfile.base` builds `opd-base:latest` from Debian, including the development
   tools, Node, Playwright MCP, and managed Chromium/FFmpeg.
-- `Dockerfile` builds `ompd:latest` from that base, installing native omp and
+- `Dockerfile` builds `opd:latest` from that base, installing native omp and
   creating the UID/GID-mapped runtime user.
 
 `./build` creates the base automatically if its tag is absent locally; otherwise
@@ -103,20 +117,20 @@ it reuses it without rebuilding it. Changes to `Dockerfile.base` or
 `./build`. To refresh all base dependencies, use `./build --base --pull --no-cache`.
 Changing omp's version or runtime UID/GID does not rebuild the toolchain.
 
-Set `OMPD_BASE_IMAGE` to select a different base tag for both build commands.
+Set `OPD_BASE_IMAGE` to select a different base tag for both build commands.
 Docker options apply only to the selected build; the automatic missing-base build
 uses defaults. For cross-architecture builds, build a matching base explicitly
 first and use separate tags for each architecture:
 
 ```bash
-OMPD_BASE_IMAGE=ompd-base:amd64 ./build --base --platform linux/amd64
-OMPD_BASE_IMAGE=ompd-base:amd64 OMPD_IMAGE=ompd:amd64 ./build --platform linux/amd64
-OMPD_BASE_IMAGE=ompd-base:arm64 ./build --base --platform linux/arm64
-OMPD_BASE_IMAGE=ompd-base:arm64 OMPD_IMAGE=ompd:arm64 ./build --platform linux/arm64
+OPD_BASE_IMAGE=opd-base:amd64 ./build --base --platform linux/amd64
+OPD_BASE_IMAGE=opd-base:amd64 OPD_IMAGE=opd:amd64 ./build --platform linux/amd64
+OPD_BASE_IMAGE=opd-base:arm64 ./build --base --platform linux/arm64
+OPD_BASE_IMAGE=opd-base:arm64 OPD_IMAGE=opd:arm64 ./build --platform linux/arm64
 ```
 
 Direct Docker builds must also build or pull the base first, then select it with
-`docker build --build-arg BASE_IMAGE=...` when not using `ompd-base:latest`.
+`docker build --build-arg BASE_IMAGE=...` when not using `opd-base:latest`.
 
 ## Profiles and state
 
@@ -153,11 +167,10 @@ ancestor directory aliases are not blanket-rejected.
 Profile selection order:
 
 1. Last native `--profile`.
-2. `--pi-profile`.
+2. `--opd-profile`.
 3. Defined `OMP_PROFILE`, even when empty.
-4. Defined `PI_PROFILE`.
-5. `OMPD_PROFILE`.
-6. `default`.
+4. `OPD_PROFILE`.
+5. `default`.
 
 `default`, empty, or whitespace selects the default profile. Named profiles must
 be lowercase, start with a letter or digit, and contain only letters, digits,
@@ -199,9 +212,9 @@ After seeding, use native `/settings`, `config set`, or edit the persisted file:
 For example:
 
 ```bash
-./pi -- config set task.maxConcurrency 4
-./pi --pi-profile work -- login
-./pi --pi-profile work -- config path
+./opd -- config set task.maxConcurrency 4
+./opd --opd-profile work -- login
+./opd --opd-profile work -- config path
 ```
 
 These changes survive restarts. Editing a repository seed affects only profiles
@@ -211,7 +224,7 @@ workflow. Review those saved settings if you previously relied on an overlay.
 
 The wrapper does not load `config.local.yml` or inject/forward `PI_CONFIG_FILES`.
 Explicit native `--config` remains an opt-in overlay with native precedence.
-Repository config is still mounted read-only at `/config/ompd` for such explicit
+Repository config is still mounted read-only at `/config/opd` for such explicit
 paths. MCP configuration remains user-managed.
 
 An optional `config/models.yml` is also seeded once, preserving existing
@@ -221,8 +234,8 @@ The bundled standalone `ollama` seed maps the main session and native task
 agents to a local Ollama model, with task concurrency four:
 
 ```bash
-pi --pi-profile ollama
-OLLAMA_BASE_URL=http://host.docker.internal:11434 pi --pi-profile ollama
+opd --opd-profile ollama
+OLLAMA_BASE_URL=http://host.docker.internal:11434 opd --opd-profile ollama
 ```
 
 ## Environment
@@ -231,13 +244,13 @@ Useful wrapper variables:
 
 | Variable | Purpose |
 | --- | --- |
-| `OMPD_IMAGE` | Docker image tag; default `ompd:latest` |
-| `OMPD_BASE_IMAGE` | Build-only Debian/toolchain image tag; default `ompd-base:latest` |
-| `OMPD_DATA_DIR` | Absolute persistent home path |
-| `OMPD_PROFILE` | Wrapper default profile |
-| `OMP_PROFILE`, `PI_PROFILE` | Native profile defaults |
-| `OMPD_DISPLAY` | Override display forwarding; empty disables it |
-| `OMPD_NO_BANNER` | Any nonempty value suppresses the logo and launch details |
+| `OPD_IMAGE` | Docker image tag; default `opd:latest` |
+| `OPD_BASE_IMAGE` | Build-only Debian/toolchain image tag; default `opd-base:latest` |
+| `OPD_DATA_DIR` | Absolute persistent home path |
+| `OPD_PROFILE` | Wrapper default profile |
+| `OMP_PROFILE` | Native profile default; defined empty selects default |
+| `OPD_DISPLAY` | Override display forwarding; empty disables it |
+| `OPD_NO_BANNER` | Any nonempty value suppresses the logo and launch details |
 
 Provider variables are forwarded only when set and only by name:
 
@@ -259,7 +272,7 @@ container metadata may still inspect container environment variables.
 ./clearcache
 ```
 
-Only contents of `$OMPD_DATA_DIR/.cache` are removed. `.omp` auth, settings,
+Only contents of `$OPD_DATA_DIR/.cache` are removed. `.omp` auth, settings,
 profiles, models, and sessions are preserved. Symlinked home or `.cache` roots
 are refused, including trailing `/` and `/.` spellings of a linked home root.
 Symlinks inside `.cache` are unlinked, not followed.
@@ -294,7 +307,7 @@ Host networking and X11/XQuartz forwarding expose host services or desktop
 access. Disable display forwarding with:
 
 ```bash
-OMPD_DISPLAY='' pi
+OPD_DISPLAY='' opd
 ```
 
 ## Verification
@@ -302,7 +315,7 @@ OMPD_DISPLAY='' pi
 Local checks:
 
 ```bash
-bash -n pi build clearcache
+bash -n opd build clearcache
 python3 tests/run
 ```
 
@@ -315,7 +328,7 @@ Docker smoke checks on a Docker-enabled host:
 
 ```bash
 ./build
-docker run --rm --entrypoint /bin/bash ompd:latest -lc '
+docker run --rm --entrypoint /bin/bash opd:latest -lc '
   set -e
   for tool in git ssh rg fd fzf jq yq python basedpyright-langserver pytest \
     go gcc make cmake terraform terraform-ls node npm tsc \
@@ -328,8 +341,8 @@ docker run --rm --entrypoint /bin/bash ompd:latest -lc '
 '
 
 smoke_home="$(mktemp -d)"
-OMP_PROFILE=default OMPD_DATA_DIR="$smoke_home" OMPD_DISPLAY='' ./pi -- --version
-OMPD_DATA_DIR="$smoke_home" OMPD_DISPLAY='' ./pi --pi-profile smoke -- --help
+OMP_PROFILE=default OPD_DATA_DIR="$smoke_home" OPD_DISPLAY='' ./opd -- --version
+OPD_DATA_DIR="$smoke_home" OPD_DISPLAY='' ./opd --opd-profile smoke -- --help
 test -f "$smoke_home/.omp/agent/config.yml"
 test -f "$smoke_home/.omp/profiles/smoke/agent/config.yml"
 ```

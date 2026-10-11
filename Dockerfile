@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=ompd-base:latest
+ARG BASE_IMAGE=opd-base:latest
 FROM ${BASE_IMAGE}
 
 ARG OMP_VERSION=18.9.2

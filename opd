@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-die() { printf 'pi: %s\n' "$*" >&2; exit 1; }
+die() { printf 'opd: %s\n' "$*" >&2; exit 1; }
 
 resolve_script_dir() {
     local source="${BASH_SOURCE[0]}" count=0
@@ -17,23 +17,23 @@ resolve_script_dir() {
 
 usage() {
     cat <<'EOF'
-Usage: pi [wrapper options] [omp arguments]
+Usage: opd [wrapper options] [omp arguments]
 
-  --pi-help           Show wrapper help (native help: pi -- --help)
-  --pi-debug          Keep the container and print inspection/removal commands
-  --pi-profile NAME   Select native profile state and its first-launch config seed
+  --opd-help           Show wrapper help (native help: opd -- --help)
+  --opd-debug          Keep the container and print inspection/removal commands
+  --opd-profile NAME   Select native profile state and its first-launch config seed
   --                  Stop wrapper parsing; forward remaining arguments literally
 
 Native arguments are preserved as an array. Explicit native --profile wins over
 environment defaults; conflicting explicit wrapper/native profiles are rejected.
 Last native --profile wins. Names are 1-64 lowercase letters/digits, dots,
 underscores or hyphens, starting with a letter/digit; no trailing dot or reserved
-Windows device names. Empty/whitespace/default selects default. OMP_PROFILE,
-even when empty, takes precedence over PI_PROFILE.
+Windows device names. Empty/whitespace/default selects default. Defined
+OMP_PROFILE, even when empty, takes precedence over OPD_PROFILE.
 
-Environment: OMPD_IMAGE (ompd:latest), OMPD_DATA_DIR (repo/data; absolute),
-OMPD_PROFILE (default), OMP_PROFILE / PI_PROFILE (native selection),
-OMPD_DISPLAY (override DISPLAY), OMPD_NO_BANNER (suppress logo and launch details).
+Environment: OPD_IMAGE (opd:latest), OPD_DATA_DIR (repo/data; absolute),
+OPD_PROFILE (default), OMP_PROFILE (native selection),
+OPD_DISPLAY (override DISPLAY), OPD_NO_BANNER (suppress logo and launch details).
 EOF
 }
 
@@ -102,10 +102,10 @@ parse_args() {
     DEBUG_MODE=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --pi-help) usage >&2; exit 0 ;;
-            --pi-debug) DEBUG_MODE=true; shift ;;
-            --pi-profile)
-                [[ $# -ge 2 ]] || die '--pi-profile requires NAME'
+            --opd-help) usage >&2; exit 0 ;;
+            --opd-debug) DEBUG_MODE=true; shift ;;
+            --opd-profile)
+                [[ $# -ge 2 ]] || die '--opd-profile requires NAME'
                 normalize_profile "$2"
                 [[ -z "$WRAPPER_PROFILE" || "$WRAPPER_PROFILE" == "$NORMALIZED_PROFILE" ]] || die 'conflicting wrapper profiles'
                 WRAPPER_PROFILE="$NORMALIZED_PROFILE"; shift 2 ;;
@@ -161,12 +161,12 @@ parse_native_args() {
     # Select once, preserving a defined-empty native environment as default.
     local profile="${native_profile:-$WRAPPER_PROFILE}"
     if [[ -z "$profile" ]]; then
-        profile="${OMP_PROFILE-${PI_PROFILE-${OMPD_PROFILE-default}}}"
+        profile="${OMP_PROFILE-${OPD_PROFILE-default}}"
     fi
     normalize_profile "$profile"
     SELECTED_PROFILE="$NORMALIZED_PROFILE"
     if [[ -n "$native_profile" && -n "$WRAPPER_PROFILE" && "$SELECTED_PROFILE" != "$WRAPPER_PROFILE" ]]; then
-        die 'explicit --pi-profile and native --profile disagree'
+        die 'explicit --opd-profile and native --profile disagree'
     fi
 
     detect_machine_mode ${residual[@]+"${residual[@]}"}
@@ -233,8 +233,8 @@ check_mount_path() {
 }
 
 prepare_data() {
-    DATA_DIR="${OMPD_DATA_DIR:-$SCRIPT_DIR/data}"
-    [[ "$DATA_DIR" == /* ]] || die 'OMPD_DATA_DIR must be absolute'
+    DATA_DIR="${OPD_DATA_DIR:-$SCRIPT_DIR/data}"
+    [[ "$DATA_DIR" == /* ]] || die 'OPD_DATA_DIR must be absolute'
     # Strip terminal directory syntax before testing the root itself for links.
     while [[ "$DATA_DIR" != / ]]; do
         case "$DATA_DIR" in
@@ -295,8 +295,8 @@ prepare_display() {
     HOST_DISPLAY=''
     X11_STATUS='not mounted'
     XAUTHORITY_STATUS='not mounted'
-    local host_display="${OMPD_DISPLAY-${DISPLAY:-}}" xhost_bin xhost_display authority
-    [[ ! ${OMPD_DISPLAY+x} || -n "$OMPD_DISPLAY" ]] || return 0
+    local host_display="${OPD_DISPLAY-${DISPLAY:-}}" xhost_bin xhost_display authority
+    [[ ! ${OPD_DISPLAY+x} || -n "$OPD_DISPLAY" ]] || return 0
     case "$(uname -s)" in
         Darwin)
             if [[ -d /Applications/Utilities/XQuartz.app || -d /Applications/XQuartz.app ]]; then
@@ -309,7 +309,7 @@ prepare_display() {
                     DISPLAY="$xhost_display" "$xhost_bin" +localhost >/dev/null 2>&1 || true
                 fi
             fi
-            if [[ ! ${OMPD_DISPLAY+x} ]]; then
+            if [[ ! ${OPD_DISPLAY+x} ]]; then
                 case "$host_display" in
                     ''|:*|/tmp/*|/private/tmp/*|/var/run/com.apple.launchd.*) host_display=host.docker.internal:0 ;;
                 esac
@@ -355,10 +355,10 @@ prepare_runtime() {
         command -v "$tool" >/dev/null 2>&1 || die "required host tool '$tool' is missing; install it and retry"
     done
     resolve_script_dir
-    IMAGE_NAME="${OMPD_IMAGE:-ompd:latest}"
+    IMAGE_NAME="${OPD_IMAGE:-opd:latest}"
     command -v docker >/dev/null 2>&1 || die "Docker is not installed or not on PATH. Install/start Docker, then run $SCRIPT_DIR/build."
     docker info >/dev/null 2>&1 || die 'Docker daemon unavailable; start Docker/Docker Desktop and check context/socket permissions'
-    docker image inspect "$IMAGE_NAME" >/dev/null 2>&1 || die "image '$IMAGE_NAME' unavailable. Run $SCRIPT_DIR/build; or build/pull the custom OMPD_IMAGE tag."
+    docker image inspect "$IMAGE_NAME" >/dev/null 2>&1 || die "image '$IMAGE_NAME' unavailable. Run $SCRIPT_DIR/build; or build/pull the custom OPD_IMAGE tag."
     check_mount_path "$SCRIPT_DIR/config"
 }
 
@@ -380,46 +380,45 @@ prepare_workspace() {
 }
 
 print_start_banner() {
-    [[ -z "${OMPD_NO_BANNER:-}" ]] || return 0
+    [[ -z "${OPD_NO_BANNER:-}" ]] || return 0
     if [[ "$USED_TTY" == true && -t 2 ]]; then
         cat >&2 <<'EOF'
-                    o
-                   / \
-            o-----o---o-----o
-           /       \ /       \
-          o         o         o
-                    |
-                                                      88
-                                                      88
-   ,adPPYba,  88,dPYba,,adPYba,  8b,dPPYba,   ,adPPYb,88
-  a8"  o  "8a 88P'   "88"    "8a 88P'    "8a a8"    `Y88
-  8b   |   d8 88     88      88 88       d8 8b---o---88
-  "8a,-o-,a8" 88     88      88 88b,   ,a8" "8a,-|-,d88
-   `"YbbdP"'  88     88      88 88`YbbdP"'   `"8bbdP"Y8
-                               88
-                               88
-                     oh-my-pi / Docker
+                   o
+                  / \
+           o-----o---o-----o
+          /       \ /       \
+         o         o         o
+                   |
+                                   88
+                                   88
+   ,adPPYba,  8b,dPPYba,   ,adPPYb,88
+  a8"  o  "8a 88P'    "8a a8"    `Y88
+  8b   |   d8 88       d8 8b---o---88
+  "8a,-o-,a8" 88b,   ,a8" "8a,-|-,d88
+   `"YbbdP"'  88`YbbdP"'   `"8bbdP"Y8
+              88
+              88
 
 EOF
     fi
     local terminal='not allocated (non-terminal stdin/stdout)' cleanup='remove container on exit'
     [[ "$MACHINE_MODE" != true ]] || terminal='not allocated (print/protocol mode)'
     [[ "$USED_TTY" != true ]] || terminal='allocated'
-    [[ "$DEBUG_MODE" != true ]] || cleanup='preserve container (--pi-debug)'
+    [[ "$DEBUG_MODE" != true ]] || cleanup='preserve container (--opd-debug)'
     printf 'Launch details:\n'
     printf '  Image: %s\n  Container: %s\n  Profile: %s\n' "$IMAGE_NAME" "$CONTAINER_NAME" "$SELECTED_PROFILE"
     printf '  Terminal: %s\n  Cleanup: %s\n' "$terminal" "$cleanup"
     printf '  Workspace: %s -> %s (read/write)\n' "$CURRENT_DIR" "$CONTAINER_WORKSPACE"
     printf '  Persistent home: %s -> /home/coder (read/write)\n' "$DATA_DIR"
     printf '  Profile state: %s -> %s (persistent settings/auth/sessions)\n' "$AGENT_DIR" "/home/coder${AGENT_DIR#"$DATA_DIR"}"
-    printf '  Repository config: %s -> /config/ompd (read-only; not a settings overlay)\n' "$SCRIPT_DIR/config"
+    printf '  Repository config: %s -> /config/opd (read-only; not a settings overlay)\n' "$SCRIPT_DIR/config"
     printf '  Runtime sockets: container-local tmpfs (ephemeral)\n'
     printf '  Display: %s\n  X11 socket: %s\n  Xauthority: %s\n' "${HOST_DISPLAY:-disabled}" "$X11_STATUS" "$XAUTHORITY_STATUS"
     printf '  Network: host (host services accessible)\n\n'
 }
 
 run_container() {
-    CONTAINER_NAME="ompd-$(date +%Y%m%d-%H%M%S)-$$-$RANDOM"
+    CONTAINER_NAME="opd-$(date +%Y%m%d-%H%M%S)-$$-$RANDOM"
     local docker_args=(run -i) variable status
     USED_TTY=false
     if [[ -t 0 && -t 1 && "$MACHINE_MODE" == false ]]; then
@@ -433,11 +432,11 @@ run_container() {
         --mount "type=bind,source=$DATA_DIR,target=/home/coder"
         --tmpfs /home/coder/.omp/run:rw,nosuid,nodev,mode=1777
         --mount "type=bind,source=$CURRENT_DIR,target=$CONTAINER_WORKSPACE"
-        --mount "type=bind,source=$SCRIPT_DIR/config,target=/config/ompd,readonly"
+        --mount "type=bind,source=$SCRIPT_DIR/config,target=/config/opd,readonly"
         -w "$CONTAINER_WORKSPACE" -e HOME=/home/coder
         -e PATH=/home/coder/.local/bin:/home/coder/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
         -e "TERM=${TERM:-xterm-256color}" -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8
-        -e "OMP_PROFILE=$SELECTED_PROFILE" -e "PI_PROFILE=$SELECTED_PROFILE")
+        -e "OMP_PROFILE=$SELECTED_PROFILE")
     if [[ "$SELECTED_PROFILE" != default ]]; then
         docker_args+=(--tmpfs "/home/coder/.omp/profiles/$SELECTED_PROFILE/run:rw,nosuid,nodev,mode=1777")
     fi
@@ -460,7 +459,7 @@ run_container() {
     if [[ "$DEBUG_MODE" == true ]]; then
         printf 'Debug container: %s\n  docker logs %s\n  docker inspect %s\n  docker rm %s\n' "$CONTAINER_NAME" "$CONTAINER_NAME" "$CONTAINER_NAME" "$CONTAINER_NAME" >&2
     fi
-    if [[ "$USED_TTY" == true && -t 2 && -z "${OMPD_NO_BANNER:-}" ]]; then
+    if [[ "$USED_TTY" == true && -t 2 && -z "${OPD_NO_BANNER:-}" ]]; then
         sleep 2
     fi
     status=0

@@ -17,13 +17,13 @@ for ARG in "$@"; do
     case "$ARG" in
         --dry-run) DRY_RUN=true ;;
         -h|--help)
-            printf 'Usage: clearcache [--dry-run]\nRemoves only .cache contents under OMPD_DATA_DIR (default: repo/data).\nPreserves all .omp auth, settings, profiles and sessions, and all other files.\nStop containers first. Symlinked data/cache roots are refused; links within\n.cache are unlinked, never followed.\n'
+            printf 'Usage: clearcache [--dry-run]\nRemoves only .cache contents under OPD_DATA_DIR (default: repo/data).\nPreserves all .omp auth, settings, profiles and sessions, and all other files.\nStop containers first. Symlinked data/cache roots are refused; links within\n.cache are unlinked, never followed.\n'
             exit 0 ;;
         *) die "unknown argument: $ARG" ;;
     esac
 done
-DATA_DIR="${OMPD_DATA_DIR:-$SCRIPT_DIR/data}"
-[[ "$DATA_DIR" == /* ]] || die 'OMPD_DATA_DIR must be absolute'
+DATA_DIR="${OPD_DATA_DIR:-$SCRIPT_DIR/data}"
+[[ "$DATA_DIR" == /* ]] || die 'OPD_DATA_DIR must be absolute'
 # Strip only terminal directory syntax so -L tests the named home itself.
 # Ancestor aliases and '..' retain their filesystem meaning.
 while [[ "$DATA_DIR" != / ]]; do
