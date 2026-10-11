@@ -105,6 +105,8 @@ RUN npm install -g --prefix /usr/local \
     typescript@latest \
     typescript-language-server@latest
 
+COPY --chmod=0755 playwright-chromium-launcher /usr/local/bin/playwright-chromium
+
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 RUN npx @playwright/mcp install-browser chromium --with-deps \
@@ -112,7 +114,7 @@ RUN npx @playwright/mcp install-browser chromium --with-deps \
     && FFMPEG_BIN="$(find /ms-playwright -path '*/ffmpeg-linux' -type f | sort | tail -n 1)" \
     && test -x "$CHROMIUM_BIN" \
     && test -x "$FFMPEG_BIN" \
-    && ln -sf "$CHROMIUM_BIN" /usr/local/bin/playwright-chromium \
+    && ln -sf "$CHROMIUM_BIN" /usr/local/lib/playwright-chromium \
     && ln -sf "$FFMPEG_BIN" /usr/local/bin/playwright-ffmpeg \
     && chmod -R a+rX /ms-playwright \
     && test -x /usr/local/bin/playwright-chromium \

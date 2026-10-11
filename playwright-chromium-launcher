@@ -1,0 +1,3 @@
+#!/bin/sh
+# Shared launch policy: hide only Chrome for Testing's non-interactive banner.
+exec /usr/local/lib/playwright-chromium --disable-infobars "$@"

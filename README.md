@@ -215,7 +215,11 @@ Symlinks inside `.cache` are unlinked, not followed.
 ## Browser, MCP, and display
 
 Native browser automation uses the image browser via
-`PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/playwright-chromium`.
+`PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/playwright-chromium`. The launcher
+suppresses Chrome for Testing's informational banner in headed windows; it does
+not change the browser build or hide page-level permission prompts.
+Rendering and screenshot workarounds in `config/playwright-mcp.json` remain
+specific to the optional MCP server and are not imposed on native automation.
 
 Headless native browser use is the default. Headed use needs a working X11 or
 XQuartz display:
