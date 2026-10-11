@@ -30,6 +30,10 @@ behavior and do not replace real image builds or runtime checks.
   `/workspaces/<sanitized basename>-<12 SHA-256 hex>` session bucket.
 - Persist repo `data/` as `/home/coder` by default. Never inspect runtime auth or
   sessions while developing. Do not rewrite host Git metadata or migrate sessions.
+- Mount `.omp/run` and the selected named profile's `run` on container-local
+  tmpfs so native daemon socket chmod does not depend on host filesystem support.
+  Reject linked runtime mount targets; hide existing runtime files without deleting
+  them. Keep auth/settings/models/sessions and other home contents persistent.
 - Native profiles isolate `.omp/profiles/<name>/agent`; `default` uses
   `.omp/agent`. Trim profile names; empty/default selects default. Other names
   match `^[a-z0-9][a-z0-9._-]{0,63}$`, with no trailing dot or Windows reserved

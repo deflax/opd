@@ -125,6 +125,13 @@ Named profile state:
 data/.omp/profiles/<name>/agent/
 ```
 
+Native transient runtime directories are mounted on container-local tmpfs:
+`/home/coder/.omp/run` and, for a named profile, its
+`/home/coder/.omp/profiles/<name>/run`. This keeps daemon sockets off host-shared
+filesystems that reject socket permission changes. Runtime state is discarded
+when the container stops; existing host runtime files are hidden, not deleted.
+Auth, settings, models, sessions, and user assets remain persistent.
+
 The launcher refuses a symlinked persistent-home root before creating or seeding
 state, including spellings ending in `/`, `/.`, or repeated combinations of
 those suffixes. Real directory roots with the same suffixes remain accepted;

@@ -261,6 +261,14 @@ prepare_data() {
         [[ -d "$path" && -w "$path" ]] || die "agent directory is not writable: $path"
     done
     AGENT_DIR="$path"
+    # Native brokers chmod Unix sockets, which host-shared filesystems may reject.
+    # Check mount targets without following linked runtime directories.
+    local runtime_dir runtime_dirs=("$DATA_DIR/.omp/run")
+    [[ "$SELECTED_PROFILE" == default ]] || runtime_dirs+=("${AGENT_DIR%/agent}/run")
+    for runtime_dir in "${runtime_dirs[@]}"; do
+        [[ ! -L "$runtime_dir" ]] || die "refusing symlinked runtime directory: $runtime_dir"
+        mkdir -p -- "$runtime_dir" || die 'cannot create native runtime mount directory'
+    done
     local template="$SCRIPT_DIR/config/profiles/$SELECTED_PROFILE.yml"
     [[ -f "$template" ]] || template="$SCRIPT_DIR/config/config.yml"
     seed_config "$template" config.yml config.yaml settings.json
@@ -378,12 +386,16 @@ run_container() {
         --user coder --security-opt no-new-privileges:true --cap-drop ALL
         --cap-add CHOWN --cap-add SETUID --cap-add SETGID
         --mount "type=bind,source=$DATA_DIR,target=/home/coder"
+        --tmpfs /home/coder/.omp/run:rw,nosuid,nodev,mode=1777
         --mount "type=bind,source=$CURRENT_DIR,target=$CONTAINER_WORKSPACE"
         --mount "type=bind,source=$SCRIPT_DIR/config,target=/config/ompd,readonly"
         -w "$CONTAINER_WORKSPACE" -e HOME=/home/coder
         -e PATH=/home/coder/.local/bin:/home/coder/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
         -e "TERM=${TERM:-xterm-256color}" -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8
         -e "OMP_PROFILE=$SELECTED_PROFILE" -e "PI_PROFILE=$SELECTED_PROFILE")
+    if [[ "$SELECTED_PROFILE" != default ]]; then
+        docker_args+=(--tmpfs "/home/coder/.omp/profiles/$SELECTED_PROFILE/run:rw,nosuid,nodev,mode=1777")
+    fi
     for variable in \
         OPENAI_API_KEY OPENAI_CODEX_OAUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN \
         GEMINI_API_KEY GOOGLE_API_KEY OPENROUTER_API_KEY GROQ_API_KEY MISTRAL_API_KEY \

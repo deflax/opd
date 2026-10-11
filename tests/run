@@ -946,15 +946,17 @@ with open({str(host_calls)!r}, 'a') as log:
 
     def test_symlinked_agent_state_refused_without_seeding_outside(self):
         for relative, profile in (('.omp', None), ('.omp/agent', None),
+                                  ('.omp/run', None), ('.omp/run', 'work'),
                                   ('.omp/profiles', 'work'),
                                   ('.omp/profiles/work', 'work'),
-                                  ('.omp/profiles/work/agent', 'work')):
-            with self.subTest(relative=relative):
+                                  ('.omp/profiles/work/agent', 'work'),
+                                  ('.omp/profiles/work/run', 'work')):
+            with self.subTest(relative=relative, profile=profile):
                 self.reset_log()
                 data = self.repo / 'data'
                 if data.exists():
                     shutil.rmtree(data)
-                outside = self.case / ('outside-' + relative.replace('/', '-'))
+                outside = self.case / ('outside-' + relative.replace('/', '-') + '-' + (profile or 'default'))
                 outside.mkdir()
                 sentinel = outside / 'sentinel'
                 sentinel.write_bytes(b'outside state must survive\n')
