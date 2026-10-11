@@ -1,6 +1,10 @@
 # ompd
 
-Docker wrapper for native `omp`.
+Docker wrapper for native `omp`, pinned to **v18.9.1**.
+
+Official upstream: [release](https://github.com/can1357/oh-my-pi/releases/tag/v18.9.1),
+[source](https://github.com/can1357/oh-my-pi/tree/v18.9.1), and
+[pinned installer](https://github.com/can1357/oh-my-pi/blob/v18.9.1/scripts/install.sh).
 
 `./build` creates the image. `./pi` runs `omp` inside it with the current
 project mounted under `/workspaces/...` and persistent state in `data/`.
@@ -29,6 +33,13 @@ printf 'Explain this project\n' | pi -- --print
 
 `--` stops wrapper parsing. Everything after it is passed to native `omp`.
 Unknown arguments are forwarded literally; the wrapper does not use `eval`.
+
+Docker keeps stdin attached (`-i`). A TTY (`-t`) is allocated only when both
+stdin and stdout are terminals and the final valid native mode is `text` (the default)
+or `rpc-ui`. The last valid `--mode` wins: an earlier `json`, `rpc`, or `acp` mode does
+not permanently disable a later `text` or `rpc-ui` mode. `--print`/`-p` and the
+`acp` command always suppress the TTY, even with a later `--mode text`. Tokens
+used as option values or passed after native `--` do not select a mode.
 
 Wrapper options:
 
@@ -72,6 +83,11 @@ Named profile state:
 data/.omp/profiles/<name>/agent/
 ```
 
+The launcher refuses a symlinked persistent-home root before creating or seeding
+state, including spellings ending in `/`, `/.`, or repeated combinations of
+those suffixes. Real directory roots with the same suffixes remain accepted;
+ancestor directory aliases are not blanket-rejected.
+
 Profile selection order:
 
 1. Last native `--profile`.
@@ -88,6 +104,13 @@ reserved device names are rejected.
 
 The wrapper sets native profile environment variables instead of injecting
 profile flags, so subcommands keep native parsing behavior.
+
+Profile extraction follows the pinned native bootstrap: option values are not
+profile flags, native `--` ends extraction, and a registered non-launch command
+in the first remaining argument position owns everything after it. Explicit
+`launch` and `acp` continue profile extraction. Leading launch options can make
+a later command eligible for native dispatch without creating that early
+profile boundary.
 
 ## Configuration
 
@@ -153,7 +176,8 @@ container metadata may still inspect container environment variables.
 
 Only contents of `$OMPD_DATA_DIR/.cache` are removed. `.omp` auth, settings,
 profiles, models, and sessions are preserved. Symlinked home or `.cache` roots
-are refused. Symlinks inside `.cache` are unlinked, not followed.
+are refused, including trailing `/` and `/.` spellings of a linked home root.
+Symlinks inside `.cache` are unlinked, not followed.
 
 ## Browser, MCP, and display
 

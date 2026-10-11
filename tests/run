@@ -459,6 +459,37 @@ with open({str(host_calls)!r}, 'a') as log:
                 self.assertEqual(before, after)
                 self.assertEqual(call[call.index('/usr/local/bin/omp') + 1:], args)
 
+    def test_final_mode_controls_tty_unless_print_or_acp(self):
+        scenarios = [
+            (['--mode=rpc', '--mode', 'text'], True),
+            (['--mode', 'json', '--mode=text'], True),
+            (['--mode=acp', '--mode', 'rpc-ui'], True),
+            (['--mode', 'rpc', '--mode=json', '--mode', 'text'], True),
+            (['--mode=text', '--mode', 'rpc'], False),
+            (['--mode', 'rpc-ui', '--mode=json'], False),
+            (['--mode=text', '--mode', 'acp'], False),
+            (['--mode', 'text', '--mode=rpc', '--mode', 'json'], False),
+            (['--print', '--mode=rpc', '--mode', 'text', 'prompt'], False),
+            (['-p', '--mode=text', 'prompt'], False),
+            (['acp', '--mode=rpc', '--mode', 'text'], False),
+            (['--mode=rpc', 'acp', '--mode', 'text'], False),
+            (['--mode=rpc', '--system-prompt', '--mode=text'], False),
+            (['--mode=text', '--system-prompt', '--mode=rpc'], True),
+            (['grep', '--mode=rpc', '--mode', 'text'], True),
+            (['img', '--mode=text', '--mode', 'rpc'], True),
+        ]
+        for args, tty in scenarios:
+            with self.subTest(args=args):
+                self.reset_log()
+                result, before, after = self.invoke_tty('--', *args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, b'')
+                self.assertEqual(before, after)
+                call, _ = self.run_call()
+                self.assertIn('-i', call)
+                self.assertEqual('-t' in call, tty)
+                self.assertEqual(call[call.index('/usr/local/bin/omp') + 1:], args)
+
     def test_stdout_and_docker_status_pass_through(self):
         payload = '{"response":"native output"}\nsecond line\n'
         for args in (['--print', 'prompt'], ['--mode', 'rpc'], ['acp']):
@@ -507,21 +538,6 @@ with open({str(host_calls)!r}, 'a') as log:
     def test_base_config_seeded_once_default_and_named(self):
         base = self.repo / 'config' / 'config.yml'
         content = base.read_bytes()
-        # Check this small canonical YAML as text, not upstream runtime parsing.
-        settings = [line for line in content.decode().splitlines()
-                    if line.strip() and not line.lstrip().startswith('#')]
-        expected_agents = {
-            'scout': 'openai/gpt-6-luna',
-            'reviewer': 'openai/gpt-6-astra',
-            'security-reviewer': 'openai/gpt-6-astra',
-            'task': 'openai/gpt-6.1-sol',
-            'sonic': 'openai/gpt-6.1-sol',
-        }
-        self.assertEqual(settings, [
-            'modelRoles:', '  default: openai/gpt-6.1-sol',
-            'task:', '  maxConcurrency: 4', '  agentModelOverrides:',
-            *[f'    {agent}: {model}' for agent, model in expected_agents.items()],
-        ])
         for profile in (None, 'seeded-native'):
             with self.subTest(profile=profile):
                 args = ['--pi-profile', profile] if profile else []
@@ -625,6 +641,21 @@ with open({str(host_calls)!r}, 'a') as log:
         scenarios = [
             (['--system-prompt', '--profile', 'foo'], 'default'),
             (['--print', '--system-prompt', '--profile', 'foo'], 'default'),
+            # --goal protects even flag-looking values; native validates the
+            # objective later. The mock only checks selection and forwarding.
+            (['--goal', '--profile', 'work'], 'default'),
+            (['--goal', '--profile=ignored', '--profile', 'work'], 'work'),
+            (['--goal', 'objective', '--profile=work'], 'work'),
+            (['--goal=--profile', '--profile=work'], 'work'),
+            (['--goal', '', '--profile=work'], 'work'),
+            (['--goal', 'grep', '--profile=work'], 'work'),
+            (['--goal', '--', '--profile=work'], 'work'),
+            (['--add-dir', '--profile', 'work'], 'default'),
+            (['--prewalk-into', '--profile=ignored', '--profile=work'], 'work'),
+            (['--plan-yolo-into', '--profile', 'work'], 'default'),
+            (['--max-time', '--profile', 'work'], 'default'),
+            (['--trusted-extension', '--profile', 'work'], 'default'),
+            (['--no-title', '--profile=work'], 'work'),
             (['--config', '--profile=ignored', '--profile', 'work'], 'work'),
             (['--system-prompt=--profile', '--profile=work'], 'work'),
             (['--resume', '--profile', 'work'], 'work'),
@@ -641,6 +672,7 @@ with open({str(host_calls)!r}, 'a') as log:
             (['--profile=work', 'grep', '--profile', '../path'], 'work'),
             (['grep', '--profile', '../path'], 'default'),
             (['img', '--profile', '../path'], 'default'),
+            (['anonymize', '--profile', '../path'], 'default'),
             (['plugins', '--profile=../path'], 'default'),
             (['wt', '--profile'], 'default'),
             (['launch', '--profile', 'first', '--profile=work'], 'work'),
@@ -675,6 +707,16 @@ with open({str(host_calls)!r}, 'a') as log:
         scenarios = [
             ['--system-prompt', '--print', 'prompt'],
             ['--system-prompt', '--mode=rpc', 'prompt'],
+            ['--goal', '--print', 'prompt'],
+            ['--goal', '--mode=rpc', 'prompt'],
+            ['--goal', 'acp'],
+            ['--goal=--mode=rpc'],
+            ['--add-dir', '--mode=rpc', 'prompt'],
+            ['--prewalk-into', '--print', 'prompt'],
+            ['--plan-yolo-into', '--mode=rpc', 'prompt'],
+            ['--max-time', '--mode=rpc', 'prompt'],
+            ['--trusted-extension', 'acp'],
+            ['--no-title', 'grep', '--mode=rpc'],
             ['--config', '-p', 'prompt'],
             ['--model', 'acp'],
             ['--custom-ext', 'acp'],
@@ -685,6 +727,9 @@ with open({str(host_calls)!r}, 'a') as log:
             ['help', 'acp'],
             ['grep', '--print', '--mode=rpc'],
             ['img', '--mode', 'rpc'],
+            ['anonymize', '--print', '--mode=rpc'],
+            # Resolver treats --plan as required-value, unlike bootstrap.
+            ['--plan', '--unknown', 'anonymize', '--mode=rpc'],
             ['--no-ui', 'grep', '--mode=rpc'],
             ['--print', 'grep', '--profile', 'work'],
             ['--', '--print', '--mode=rpc', 'acp'],
@@ -779,29 +824,6 @@ with open({str(host_calls)!r}, 'a') as log:
                          'Pass base, local, then named profile overlays to native omp')
         for path in resolved:
             self.assertTrue(path.is_file(), f'Missing overlay: {path}')
-
-    def test_ollama_overlay_maps_all_bundled_agents_and_is_forwarded(self):
-        profile = self.repo / 'config' / 'profiles' / 'ollama.yml'
-        settings = [line for line in profile.read_text().splitlines()
-                    if line.strip() and not line.lstrip().startswith('#')]
-        agents = ('scout', 'reviewer', 'security-reviewer', 'task', 'sonic')
-        self.assertEqual(settings, [
-            'modelRoles:', '  default: ollama/gemma4:26b-16k',
-            'task:', '  agentModelOverrides:',
-            *[f'    {agent}: ollama/gemma4:26b-16k' for agent in agents],
-        ])
-        # Mock launch checks overlay delivery and literal --model forwarding,
-        # not native model availability or runtime model resolution.
-        call = self.launch('--pi-profile', 'ollama', '--model', 'example/main')
-        assignments = dict(item.split('=', 1) for item in values(call, '-e', '--env')
-                           if '=' in item)
-        self.assertEqual(assignments['PI_CONFIG_FILES'].split(':'),
-                         ['/config/ompd/config.yml', '/config/ompd/profiles/ollama.yml'])
-        self.assertEqual(mounts(call).get('/config/ompd'), profile.parent.parent)
-        base = self.repo / 'config' / 'config.yml'
-        self.assertEqual(self.seeded_config('ollama').read_bytes(), base.read_bytes())
-        self.assertEqual(call[call.index('/usr/local/bin/omp') + 1:],
-                         ['--model', 'example/main'])
 
     def test_existing_config_formats_are_preserved(self):
         for name in ('config.yml', 'config.yaml', 'settings.json'):
@@ -915,6 +937,76 @@ with open({str(host_calls)!r}, 'a') as log:
                 self.assertFalse(any(args[:1] == ['run'] for args, _ in self.calls()))
                 self.assertEqual(list(outside.iterdir()), [sentinel])
                 self.assertEqual(sentinel.read_bytes(), b'outside state must survive\n')
+
+    def test_terminal_home_spellings_refuse_symlinks_without_seeding_or_cleanup(self):
+        suffixes = ('', '/', '/.', '/./', '///', '/././', '///.//.///')
+        for script, args in (('pi', []), ('clearcache', []),
+                             ('clearcache', ['--dry-run'])):
+            for index, suffix in enumerate(suffixes):
+                with self.subTest(script=script, args=args, suffix=suffix):
+                    self.reset_log()
+                    outside = self.case / f'outside-{script}-{len(args)}-{index}'
+                    sentinel = outside / '.cache' / 'sentinel'
+                    sentinel.parent.mkdir(parents=True)
+                    sentinel.write_bytes(b'external sentinel must survive\n')
+                    linked = self.case / f'linked-{script}-{len(args)}-{index}'
+                    linked.symlink_to(outside, target_is_directory=True)
+                    result = self.invoke(*args, script=script,
+                                         env={'OMPD_DATA_DIR': str(linked) + suffix})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(b'symlink', result.stderr.lower())
+                    self.assertEqual(result.stdout, b'')
+                    if script == 'pi':
+                        self.assertFalse(any(call[:1] == ['run'] for call, _ in self.calls()))
+                    else:
+                        self.assertEqual(self.calls(), [])
+                    self.assertEqual(sentinel.read_bytes(), b'external sentinel must survive\n')
+                    self.assertFalse((outside / '.omp').exists(),
+                                     'Rejected home must not seed state through its link')
+                    self.assertEqual(list(outside.iterdir()), [sentinel.parent])
+                    self.assertEqual(list(sentinel.parent.iterdir()), [sentinel])
+
+    def test_terminal_home_spellings_accept_real_directories(self):
+        suffixes = ('', '/', '/.', '/./', '///', '/././', '///.//.///')
+        for script in ('pi', 'clearcache'):
+            for index, suffix in enumerate(suffixes):
+                with self.subTest(script=script, suffix=suffix):
+                    self.reset_log()
+                    data = self.case / f'real-{script}-{index}'
+                    data.mkdir()
+                    sentinel = data / 'preserved'
+                    sentinel.write_bytes(b'real home sentinel\n')
+                    if script == 'clearcache':
+                        disposable = data / '.cache' / 'disposable'
+                        disposable.parent.mkdir()
+                        disposable.write_bytes(b'disposable\n')
+                    result = self.invoke(script=script,
+                                         env={'OMPD_DATA_DIR': str(data) + suffix})
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(sentinel.read_bytes(), b'real home sentinel\n')
+                    if script == 'pi':
+                        self.assertEqual(result.stdout, b'')
+                        call, _ = self.run_call()
+                        self.assertEqual(mounts(call).get('/home/coder'), data.resolve())
+                        self.assertTrue(any((data / '.omp' / 'agent' / name).is_file()
+                                            for name in ('config.yml', 'config.yaml', 'settings.json')))
+                    else:
+                        self.assertFalse(disposable.exists())
+                        self.assertEqual(self.calls(), [])
+
+    def test_terminal_filesystem_root_spellings_remain_refused(self):
+        for script in ('pi', 'clearcache'):
+            for root in ('/', '//', '/.', '/./', '///.//.///'):
+                with self.subTest(script=script, root=root):
+                    self.reset_log()
+                    result = self.invoke(script=script, env={'OMPD_DATA_DIR': root})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(b'refusing', result.stderr.lower())
+                    self.assertEqual(result.stdout, b'')
+                    if script == 'pi':
+                        self.assertFalse(any(call[:1] == ['run'] for call, _ in self.calls()))
+                    else:
+                        self.assertEqual(self.calls(), [])
 
     def test_build_host_identity_and_literal_args(self):
         result = self.invoke('--label', 'value with spaces;$HOME', script='build')

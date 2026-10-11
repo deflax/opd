@@ -1,6 +1,6 @@
 # Maintainer context
 
-Small Bash/Docker wrapper for compiled oh-my-pi `omp`, pinned to v18.4.10.
+Small Bash/Docker wrapper for compiled oh-my-pi `omp`, pinned to v18.9.1.
 `build`/`Dockerfile` own the image; `pi` owns host launch; `clearcache` deletes
 only persistent `.cache` contents. Validate script syntax with `bash -n` and
 the hermetic wrapper test suite with `python3 tests/run`; these mock Docker
@@ -35,13 +35,20 @@ behavior and do not replace real image builds or runtime checks.
   match `^[a-z0-9][a-z0-9._-]{0,63}$`, with no trailing dot or Windows reserved
   device names (including extensions). Reject uppercase and initial `_`/`-`.
   Last native `--profile` wins before native `--` or a registered non-launch
-  subcommand boundary; launch/acp continue global extraction. Reject conflicting
-  normalized wrapper/native names. OMP_PROFILE wins whenever defined, even
+  command in the first residual argv position; launch/acp continue extraction.
+  Bootstrap boundaries differ from resolver hoisting past leading global flags.
+  Mirror pinned flag tables: strings protect their next token, except bootstrap
+  `--plan` protects only value-like tokens; `--goal` protects even rejected
+  flag-looking objectives. Preserve literal argv and leave validation to native.
+  Reject conflicting normalized wrapper/native names. OMP_PROFILE wins whenever defined, even
   empty; PI_PROFILE is used only if OMP_PROFILE is undefined. A defined empty
   native selection means default, not OMPD_PROFILE fallback. Validate before
   seeding; normalize native environment without injecting flags.
 - Seed writable config/models templates once, preserving even empty existing
   native or legacy equivalents. Never follow symlinked state directories.
+  Before testing the persistent-home root with `-L`, repeatedly remove terminal
+  slashes and `/.` segments, preserving `/`. Reject the final symlink before
+  mkdir/seed/delete; never resolve it first or ban symlinked ancestors.
 - Read-only `/config/ompd` repository mount; native `PI_CONFIG_FILES` order:
   base config → optional local → optional profile. Explicit native --config
   follows environment files. Pinned settings.ts splits PI_CONFIG_FILES on
@@ -54,8 +61,10 @@ behavior and do not replace real image builds or runtime checks.
   OPENAI_CODEX_OAUTH_TOKEN; never print its value.
 - Never log credentials, prompt/native args, or full Docker commands. Wrapper
   diagnostics use stderr; preserve print/RPC stdout and Docker exit status.
-- Docker -i always; -t only for terminal stdin/stdout, not machine mode. Restore
-  terminal state and handle traps safely. Debug retains container metadata.
+- Docker -i always; -t only for terminal stdin/stdout and final valid mode text/rpc-ui.
+  Track last valid mode separately from sticky print and the ACP command; json/rpc/acp
+  suppress TTY, but earlier machine modes do not override later text/rpc-ui.
+  Restore terminal state and handle traps safely. Debug retains container metadata.
 - Host networking and optional X11 weaken isolation; document implications.
 - Clear only `.cache`; preserve all `.omp` auth/settings/models/sessions and
   user assets. Refuse linked cleanup roots; never guess internal cache paths.
@@ -83,5 +92,8 @@ behavior and do not replace real image builds or runtime checks.
 - Keep README aligned with behavior; use its official pinned upstream links.
 - Verify profile/settings rules against pinned source; source checks do not
   substitute for real Docker runtime validation.
-  Sources: https://github.com/can1357/oh-my-pi/blob/v18.4.10/packages/utils/src/dirs.ts
-  and https://github.com/can1357/oh-my-pi/blob/v18.4.10/packages/coding-agent/src/config/settings.ts
+  Sources: https://github.com/can1357/oh-my-pi/blob/v18.9.1/packages/utils/src/dirs.ts
+  and https://github.com/can1357/oh-my-pi/blob/v18.9.1/packages/coding-agent/src/config/settings.ts
+  CLI tables: https://github.com/can1357/oh-my-pi/blob/v18.9.1/packages/coding-agent/src/cli/flag-tables.ts
+  Bootstrap: https://github.com/can1357/oh-my-pi/blob/v18.9.1/packages/coding-agent/src/cli/profile-bootstrap.ts
+  Dispatch: https://github.com/can1357/oh-my-pi/blob/v18.9.1/packages/coding-agent/src/cli-commands.ts

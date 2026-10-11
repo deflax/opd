@@ -38,7 +38,7 @@ EOF
 }
 
 normalize_profile() {
-    # oh-my-pi v18.4.10 packages/utils/src/dirs.ts normalizeProfileName.
+    # oh-my-pi v18.9.1 packages/utils/src/dirs.ts normalizeProfileName.
     # POSIX/Bash whitespace trimming, not JavaScript's full Unicode trim set.
     local value="$1" LC_ALL=C
     value="${value#"${value%%[![:space:]]*}"}"
@@ -51,13 +51,13 @@ normalize_profile() {
 }
 
 native_flag_kind() {
-    # Mirrored oh-my-pi v18.4.10 coding-agent/src/cli/flag-tables.ts.
+    # Mirrored oh-my-pi v18.9.1 coding-agent/src/cli/flag-tables.ts.
     # --plan is bootstrap-shadowable; unknown long flags consume value-like
     # successors only. Inline values never consume a separate argv token.
     FLAG_KIND=none
     case "$1" in
         --plan) FLAG_KIND=shadow ;;
-        --cwd|--config|--add-dir|--mode|--fork|--provider|--model|--smol|--slow|--prewalk-into|--plan-yolo-into|--max-time|--service-tier|--api-key|--system-prompt|--system-prompt-template|--append-system-prompt|--provider-session-id|--prompt-cache-key|--session-dir|--models|--tools|--thinking|--export|--hook|--extension|-e|--trusted-extension|--plugin-dir|--skills|--approval-mode)
+        --cwd|--config|--add-dir|--mode|--fork|--provider|--model|--smol|--slow|--goal|--prewalk-into|--plan-yolo-into|--max-time|--service-tier|--api-key|--system-prompt|--system-prompt-template|--append-system-prompt|--provider-session-id|--prompt-cache-key|--session-dir|--models|--tools|--thinking|--export|--hook|--extension|-e|--trusted-extension|--plugin-dir|--skills|--approval-mode)
             FLAG_KIND=string ;;
         --resume|-r|--session) FLAG_KIND=optional ;;
         --help|--version|--allow-home|--continue|--from-claude|--from-codex|--no-session|--no-tools|--no-lsp|--no-pty|--hide-thinking|--advisor|--external-thinking|--prewalk|--no-prewalk|--plan-yolo|--print|--print-thoughts|--no-extensions|--no-skills|--no-rules|--no-title|--no-ui|--auto-approve|--yolo|--*=*) ;;
@@ -76,9 +76,9 @@ native_consumes_value() {
 }
 
 native_is_subcommand() {
-    # oh-my-pi v18.4.10 coding-agent/src/cli-commands.ts names + aliases.
+    # oh-my-pi v18.9.1 coding-agent/src/cli-commands.ts names + aliases.
     case "$1" in
-        launch|acp|auth-broker|auth-gateway|agents|bench|browser-relay|cleanse|collab|commit|completions|__complete|compress|config|dry-balance|find|gc|grep|gallery|git|grievances|images|img|if-bench|install|join|login|models|plugin|plugins|predict|ps|say|clip|play|share|setup|shell|read|render|skill|skills|ssh|stats|stream|update|usage|tiny-models|token|toks|ttsr|worktree|wt|search|q|web-search) return 0 ;;
+        launch|acp|auth-broker|auth-gateway|agents|anonymize|bench|browser-relay|cleanse|collab|commit|completions|__complete|compress|config|dry-balance|find|gc|grep|gallery|git|grievances|images|img|if-bench|install|join|login|models|plugin|plugins|predict|ps|say|clip|play|share|setup|shell|read|render|skill|skills|ssh|stats|stream|update|usage|tiny-models|token|toks|ttsr|worktree|wt|search|q|web-search) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -101,7 +101,7 @@ parse_args() {
         esac
     done
 
-    # Mirror v18.4.10 cli/profile-bootstrap.ts without changing raw OMP_ARGS.
+    # Mirror v18.9.1 cli/profile-bootstrap.ts without changing raw OMP_ARGS.
     # Only the first residual token can end global profile extraction at a
     # command boundary; launch/acp keep accepting launch-shaped global flags.
     local index=0 arg value native_profile='' can_dispatch=true boundary=false
@@ -159,31 +159,49 @@ parse_args() {
         SELECTED_PROFILE="$NORMALIZED_PROFILE"
     fi
 
-    # Detect machine launch flags and ACP behind leading flags, skipping their
-    # values and stopping at command-owned flags (cli-commands.ts boundaries).
+    # Resolve command ownership separately: unlike profile bootstrap, the native
+    # resolver consumes any successor of --plan before looking for a command.
     MACHINE_MODE=false
+    local native_mode=text print_mode=false acp_command=false
     index=0; can_dispatch=true
     # resolveCliArgv leaves leading help/version untouched rather than hoisting
     # a later command-looking token such as `--help acp`.
     case "${residual[0]:-}" in --help|-h|--version|-v|help) can_dispatch=false ;; esac
+    while [[ "$can_dispatch" == true && $index -lt ${#residual[@]} ]]; do
+        arg="${residual[$index]}"
+        [[ "$arg" != -- ]] || break
+        if [[ "$arg" != -* ]]; then
+            if native_is_subcommand "$arg"; then
+                case "$arg" in
+                    acp) acp_command=true ;;
+                    launch) ;;
+                    *) return 0 ;;
+                esac
+            fi
+            break
+        fi
+        native_flag_kind "$arg"
+        if [[ $((index + 1)) -lt ${#residual[@]} ]] &&
+           { [[ "$FLAG_KIND" == shadow ]] || native_consumes_value "${residual[$((index + 1))]}"; }; then
+            index=$((index + 1))
+        fi
+        index=$((index + 1))
+    done
+
+    # Print/ACP remain machine modes; repeated --mode uses its final valid value.
+    index=0
     while [[ $index -lt ${#residual[@]} ]]; do
         arg="${residual[$index]}"
         [[ "$arg" != -- ]] || break
-        if [[ "$can_dispatch" == true && "$arg" != -* ]]; then
-            if native_is_subcommand "$arg"; then
-                case "$arg" in
-                    acp) MACHINE_MODE=true ;;
-                    launch) ;;
-                    *) MACHINE_MODE=false; break ;;
-                esac
-            fi
-            can_dispatch=false
-        fi
         case "$arg" in
-            --print|-p|--mode=rpc|--mode=json|--mode=acp) MACHINE_MODE=true ;;
-            --mode)
-                value="${residual[$((index + 1))]:-}"
-                case "$value" in rpc|json|acp) MACHINE_MODE=true ;; esac ;;
+            --print|-p) print_mode=true ;;
+            --mode|--mode=*)
+                if [[ "$arg" == --mode ]]; then
+                    value="${residual[$((index + 1))]:-}"
+                else
+                    value="${arg#*=}"
+                fi
+                case "$value" in text|rpc-ui|rpc|json|acp) native_mode="$value" ;; esac ;;
         esac
         native_flag_kind "$arg"
         if [[ $((index + 1)) -lt ${#residual[@]} ]] && native_consumes_value "${residual[$((index + 1))]}"; then
@@ -191,6 +209,10 @@ parse_args() {
         fi
         index=$((index + 1))
     done
+    if [[ "$print_mode" == true || "$acp_command" == true ||
+          "$native_mode" == rpc || "$native_mode" == json || "$native_mode" == acp ]]; then
+        MACHINE_MODE=true
+    fi
     # Profile environment is normalized at launch, without inserting any flags
     # that could change native subcommand parsing. All raw arguments stay intact.
 }
@@ -202,6 +224,15 @@ check_mount_path() {
 prepare_data() {
     DATA_DIR="${OMPD_DATA_DIR:-$SCRIPT_DIR/data}"
     [[ "$DATA_DIR" == /* ]] || die 'OMPD_DATA_DIR must be absolute'
+    # Strip terminal directory syntax before testing the root itself for links.
+    while [[ "$DATA_DIR" != / ]]; do
+        case "$DATA_DIR" in
+            */) DATA_DIR="${DATA_DIR%/}" ;;
+            */.) DATA_DIR="${DATA_DIR%/.}" ;;
+            *) break ;;
+        esac
+        DATA_DIR="${DATA_DIR:-/}"
+    done
     [[ ! -L "$DATA_DIR" ]] || die 'refusing symlinked persistent home; use a real directory'
     mkdir -p -- "$DATA_DIR" || die 'cannot create persistent home; check permissions and build UID/GID'
     DATA_DIR="$(CDPATH= cd -P -- "$DATA_DIR" && pwd)"

@@ -24,6 +24,16 @@ for ARG in "$@"; do
 done
 DATA_DIR="${OMPD_DATA_DIR:-$SCRIPT_DIR/data}"
 [[ "$DATA_DIR" == /* ]] || die 'OMPD_DATA_DIR must be absolute'
+# Strip only terminal directory syntax so -L tests the named home itself.
+# Ancestor aliases and '..' retain their filesystem meaning.
+while [[ "$DATA_DIR" != / ]]; do
+    case "$DATA_DIR" in
+        */) DATA_DIR="${DATA_DIR%/}" ;;
+        */.) DATA_DIR="${DATA_DIR%/.}" ;;
+        *) break ;;
+    esac
+    DATA_DIR="${DATA_DIR:-/}"
+done
 [[ ! -L "$DATA_DIR" ]] || die 'refusing symlinked persistent home; no files removed'
 [[ -d "$DATA_DIR" ]] || { printf 'No persistent home; nothing to remove.\n'; exit 0; }
 DATA_DIR="$(CDPATH= cd -P -- "$DATA_DIR" && pwd)"
