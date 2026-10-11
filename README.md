@@ -41,6 +41,10 @@ printf 'Explain this project\n' | pi -- --print
 `--` stops wrapper parsing. Everything after it is passed to native `omp`.
 Unknown arguments are forwarded literally; the wrapper does not use `eval`.
 
+The launcher mirrors native argument boundaries to select persistent profile
+state and terminal allocation. Native `omp` owns execution, authentication, and
+ongoing settings; the wrapper keeps native arguments intact.
+
 Docker keeps stdin attached (`-i`). A TTY (`-t`) is allocated only when both
 stdin and stdout are terminals and the final valid native mode is `text` (the default)
 or `rpc-ui`. The last valid `--mode` wins: an earlier `json`, `rpc`, or `acp` mode does

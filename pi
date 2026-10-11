@@ -117,13 +117,12 @@ parse_args() {
 }
 
 parse_native_args() {
-
     # Mirror v18.9.1 cli/profile-bootstrap.ts without changing raw OMP_ARGS.
     # Only the first residual token can end global profile extraction at a
     # command boundary; launch/acp keep accepting launch-shaped global flags.
-    local index=0 arg value native_profile='' can_dispatch=true boundary=false
+    local index arg value native_profile='' can_dispatch=true boundary=false
     local residual=()
-    while [[ $index -lt ${#OMP_ARGS[@]} ]]; do
+    for ((index=0; index<${#OMP_ARGS[@]}; index++)); do
         arg="${OMP_ARGS[$index]}"
         if [[ "$boundary" == true ]]; then
             [[ "$arg" == -* ]] || residual+=(--omp-profile-boundary)
@@ -146,7 +145,7 @@ parse_native_args() {
                     native_flag_kind "${residual[${#residual[@]}-1]}"
                     case "$FLAG_KIND" in optional|shadow|unknown) boundary=true ;; esac
                 fi
-                index=$((index + 1)); continue ;;
+                continue ;;
         esac
         if [[ "$can_dispatch" == true && "$arg" != launch && "$arg" != acp ]] && native_is_subcommand "$arg"; then
             residual+=("${OMP_ARGS[@]:$index}"); break
@@ -158,22 +157,16 @@ parse_native_args() {
             index=$((index + 1))
             residual+=("${OMP_ARGS[$index]}")
         fi
-        index=$((index + 1))
     done
-    # Upstream normalizes the final captured native value, not overwritten ones.
-    if [[ -n "$native_profile" ]]; then
-        normalize_profile "$native_profile"
-        native_profile="$NORMALIZED_PROFILE"
+    # Select once, preserving a defined-empty native environment as default.
+    local profile="${native_profile:-$WRAPPER_PROFILE}"
+    if [[ -z "$profile" ]]; then
+        profile="${OMP_PROFILE-${PI_PROFILE-${OMPD_PROFILE-default}}}"
     fi
-    if [[ -n "$native_profile" && -n "$WRAPPER_PROFILE" && "$native_profile" != "$WRAPPER_PROFILE" ]]; then
+    normalize_profile "$profile"
+    SELECTED_PROFILE="$NORMALIZED_PROFILE"
+    if [[ -n "$native_profile" && -n "$WRAPPER_PROFILE" && "$SELECTED_PROFILE" != "$WRAPPER_PROFILE" ]]; then
         die 'explicit --pi-profile and native --profile disagree'
-    fi
-    if [[ -n "$native_profile" || -n "$WRAPPER_PROFILE" ]]; then
-        SELECTED_PROFILE="${native_profile:-$WRAPPER_PROFILE}"
-    else
-        # Defined-empty OMP_PROFILE selects default, never PI_PROFILE/OMPD_PROFILE.
-        normalize_profile "${OMP_PROFILE-${PI_PROFILE-${OMPD_PROFILE-default}}}"
-        SELECTED_PROFILE="$NORMALIZED_PROFILE"
     fi
 
     detect_machine_mode ${residual[@]+"${residual[@]}"}
@@ -181,11 +174,9 @@ parse_native_args() {
 
 detect_machine_mode() {
     local residual=("$@") index arg value can_dispatch
-
     # Resolve command ownership separately: unlike profile bootstrap, the native
     # resolver consumes any successor of --plan before looking for a command.
     MACHINE_MODE=false
-    local native_mode=text print_mode=false acp_command=false
     index=0; can_dispatch=true
     # resolveCliArgv leaves leading help/version untouched rather than hoisting
     # a later command-looking token such as `--help acp`.
@@ -196,7 +187,7 @@ detect_machine_mode() {
         if [[ "$arg" != -* ]]; then
             if native_is_subcommand "$arg"; then
                 case "$arg" in
-                    acp) acp_command=true ;;
+                    acp) MACHINE_MODE=true; return 0 ;;
                     launch) ;;
                     *) return 0 ;;
                 esac
@@ -212,8 +203,8 @@ detect_machine_mode() {
     done
 
     # Print/ACP remain machine modes; repeated --mode uses its final valid value.
-    index=0
-    while [[ $index -lt ${#residual[@]} ]]; do
+    local native_mode=text print_mode=false
+    for ((index=0; index<${#residual[@]}; index++)); do
         arg="${residual[$index]}"
         [[ "$arg" != -- ]] || break
         case "$arg" in
@@ -230,14 +221,11 @@ detect_machine_mode() {
         if [[ $((index + 1)) -lt ${#residual[@]} ]] && native_consumes_value "${residual[$((index + 1))]}"; then
             index=$((index + 1))
         fi
-        index=$((index + 1))
     done
-    if [[ "$print_mode" == true || "$acp_command" == true ||
+    if [[ "$print_mode" == true ||
           "$native_mode" == rpc || "$native_mode" == json || "$native_mode" == acp ]]; then
         MACHINE_MODE=true
     fi
-    # Profile environment is normalized at launch, without inserting any flags
-    # that could change native subcommand parsing. All raw arguments stay intact.
 }
 
 check_mount_path() {
@@ -261,12 +249,11 @@ prepare_data() {
     DATA_DIR="$(CDPATH= cd -P -- "$DATA_DIR" && pwd)"
     [[ "$DATA_DIR" != / ]] || die 'refusing to use / as the persistent home'
     check_mount_path "$DATA_DIR"
-    local relative='.omp/agent' component path="$DATA_DIR"
+    local component path="$DATA_DIR" components=(.omp)
     if [[ "$SELECTED_PROFILE" != default ]]; then
-        relative=".omp/profiles/$SELECTED_PROFILE/agent"
+        components+=(profiles "$SELECTED_PROFILE")
     fi
-    local components=()
-    IFS=/ read -r -a components <<< "$relative"
+    components+=(agent)
     for component in "${components[@]}"; do
         path="$path/$component"
         [[ ! -L "$path" ]] || die "refusing to seed through symlink: $path"
