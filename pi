@@ -33,7 +33,7 @@ even when empty, takes precedence over PI_PROFILE.
 
 Environment: OMPD_IMAGE (ompd:latest), OMPD_DATA_DIR (repo/data; absolute),
 OMPD_PROFILE (default), OMP_PROFILE / PI_PROFILE (native selection),
-OMPD_DISPLAY (override DISPLAY), OMPD_NO_BANNER (suppress launch summary).
+OMPD_DISPLAY (override DISPLAY), OMPD_NO_BANNER (suppress logo and launch details).
 EOF
 }
 
@@ -292,6 +292,9 @@ seed_config() {
 
 prepare_display() {
     DISPLAY_ARGS=()
+    HOST_DISPLAY=''
+    X11_STATUS='not mounted'
+    XAUTHORITY_STATUS='not mounted'
     local host_display="${OMPD_DISPLAY-${DISPLAY:-}}" xhost_bin xhost_display authority
     [[ ! ${OMPD_DISPLAY+x} || -n "$OMPD_DISPLAY" ]] || return 0
     case "$(uname -s)" in
@@ -314,14 +317,17 @@ prepare_display() {
         Linux)
             if [[ -n "$host_display" && -d /tmp/.X11-unix ]]; then
                 DISPLAY_ARGS+=(--mount type=bind,source=/tmp/.X11-unix,target=/tmp/.X11-unix,readonly)
+                X11_STATUS='/tmp/.X11-unix -> /tmp/.X11-unix (read-only)'
             fi
             if [[ -n "$host_display" && -n "${XAUTHORITY:-}" && -f "$XAUTHORITY" && -r "$XAUTHORITY" ]]; then
                 authority="$(CDPATH= cd -P -- "$(dirname -- "$XAUTHORITY")" && pwd)/$(basename -- "$XAUTHORITY")"
                 check_mount_path "$authority"
                 DISPLAY_ARGS+=(--mount "type=bind,source=$authority,target=/tmp/.docker.xauth,readonly" -e XAUTHORITY=/tmp/.docker.xauth)
+                XAUTHORITY_STATUS='/tmp/.docker.xauth (read-only)'
             fi ;;
     esac
     [[ -z "$host_display" ]] || DISPLAY_ARGS+=(-e "DISPLAY=$host_display")
+    HOST_DISPLAY="$host_display"
 }
 
 cleanup() {
@@ -373,6 +379,45 @@ prepare_workspace() {
     CONTAINER_WORKSPACE="/workspaces/$basename-${digest:0:12}"
 }
 
+print_start_banner() {
+    [[ -z "${OMPD_NO_BANNER:-}" ]] || return 0
+    if [[ "$USED_TTY" == true && -t 2 ]]; then
+        cat >&2 <<'EOF'
+                    o
+                   / \
+            o-----o---o-----o
+           /       \ /       \
+          o         o         o
+                    |
+                                                      88
+                                                      88
+   ,adPPYba,  88,dPYba,,adPYba,  8b,dPPYba,   ,adPPYb,88
+  a8"  o  "8a 88P'   "88"    "8a 88P'    "8a a8"    `Y88
+  8b   |   d8 88     88      88 88       d8 8b---o---88
+  "8a,-o-,a8" 88     88      88 88b,   ,a8" "8a,-|-,d88
+   `"YbbdP"'  88     88      88 88`YbbdP"'   `"8bbdP"Y8
+                               88
+                               88
+                     oh-my-pi / Docker
+
+EOF
+    fi
+    local terminal='not allocated (non-terminal stdin/stdout)' cleanup='remove container on exit'
+    [[ "$MACHINE_MODE" != true ]] || terminal='not allocated (print/protocol mode)'
+    [[ "$USED_TTY" != true ]] || terminal='allocated'
+    [[ "$DEBUG_MODE" != true ]] || cleanup='preserve container (--pi-debug)'
+    printf 'Launch details:\n'
+    printf '  Image: %s\n  Container: %s\n  Profile: %s\n' "$IMAGE_NAME" "$CONTAINER_NAME" "$SELECTED_PROFILE"
+    printf '  Terminal: %s\n  Cleanup: %s\n' "$terminal" "$cleanup"
+    printf '  Workspace: %s -> %s (read/write)\n' "$CURRENT_DIR" "$CONTAINER_WORKSPACE"
+    printf '  Persistent home: %s -> /home/coder (read/write)\n' "$DATA_DIR"
+    printf '  Profile state: %s -> %s (persistent settings/auth/sessions)\n' "$AGENT_DIR" "/home/coder${AGENT_DIR#"$DATA_DIR"}"
+    printf '  Repository config: %s -> /config/ompd (read-only; not a settings overlay)\n' "$SCRIPT_DIR/config"
+    printf '  Runtime sockets: container-local tmpfs (ephemeral)\n'
+    printf '  Display: %s\n  X11 socket: %s\n  Xauthority: %s\n' "${HOST_DISPLAY:-disabled}" "$X11_STATUS" "$XAUTHORITY_STATUS"
+    printf '  Network: host (host services accessible)\n\n'
+}
+
 run_container() {
     CONTAINER_NAME="ompd-$(date +%Y%m%d-%H%M%S)-$$-$RANDOM"
     local docker_args=(run -i) variable status
@@ -411,11 +456,12 @@ run_container() {
     trap 'handle_signal INT 130' INT
     trap 'handle_signal TERM 143' TERM
     trap 'handle_signal HUP 129' HUP
-    if [[ -z "${OMPD_NO_BANNER:-}" ]]; then
-        printf 'ompd: image=%s container=%s profile=%s\n  workspace: %s -> %s (read/write)\n  home: %s -> /home/coder\n' "$IMAGE_NAME" "$CONTAINER_NAME" "$SELECTED_PROFILE" "$CURRENT_DIR" "$CONTAINER_WORKSPACE" "$DATA_DIR" >&2
-    fi
+    print_start_banner >&2
     if [[ "$DEBUG_MODE" == true ]]; then
         printf 'Debug container: %s\n  docker logs %s\n  docker inspect %s\n  docker rm %s\n' "$CONTAINER_NAME" "$CONTAINER_NAME" "$CONTAINER_NAME" "$CONTAINER_NAME" >&2
+    fi
+    if [[ "$USED_TTY" == true && -t 2 && -z "${OMPD_NO_BANNER:-}" ]]; then
+        sleep 2
     fi
     status=0
     docker "${docker_args[@]}" <&0 &

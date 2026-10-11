@@ -503,6 +503,38 @@ with open({str(host_calls)!r}, 'a') as log:
                 self.assertEqual(result.stdout, payload.encode())
                 self.run_call()
 
+    def test_launch_diagnostics_do_not_expose_native_inputs_or_credentials(self):
+        private = ['private-prompt-sentinel', 'private-system-sentinel',
+                   'private-api-key-sentinel', 'private-provider-token-sentinel']
+        for terminal in (False, True):
+            with self.subTest(terminal=terminal):
+                self.reset_log()
+                args = ['--print', private[0], '--system-prompt', private[1],
+                        '--api-key', private[2]]
+                env = {'OPENAI_CODEX_OAUTH_TOKEN': private[3]}
+                if terminal:
+                    result, _, _ = self.invoke_tty(*args, env=env)
+                else:
+                    result = self.invoke(*args, env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, b'')
+                for value in private:
+                    self.assertNotIn(value.encode(), result.stderr)
+
+    def test_no_banner_keeps_native_output_and_exit_status(self):
+        for terminal in (False, True):
+            with self.subTest(terminal=terminal):
+                self.reset_log()
+                env = {'OMPD_NO_BANNER': '1', 'MOCK_DOCKER_STDOUT': 'native\n',
+                       'MOCK_DOCKER_STATUS': '37'}
+                if terminal:
+                    result, _, _ = self.invoke_tty('--mode', 'rpc', env=env)
+                else:
+                    result = self.invoke('--mode', 'rpc', env=env)
+                self.assertEqual(result.returncode, 37)
+                self.assertEqual(result.stdout.replace(b'\r\n', b'\n'), b'native\n')
+                self.assertEqual(result.stderr, b'')
+
     def test_signals_forward_status_and_restore_terminal(self):
         for number, status in ((signal.SIGINT, 130), (signal.SIGTERM, 143),
                                (signal.SIGHUP, 129)):

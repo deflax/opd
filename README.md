@@ -52,6 +52,19 @@ not permanently disable a later `text` or `rpc-ui` mode. `--print`/`-p` and the
 `acp` command always suppress the TTY, even with a later `--mode text`. Tokens
 used as option values or passed after native `--` do not select a mode.
 
+Interactive launches show a custom `ompd` ASCII logo in the OCD style when
+stderr is also a terminal, then pause for two seconds before starting omp.
+Launch details report the image/container, selected
+profile and persistent state path, terminal allocation, cleanup policy,
+workspace/home/config mounts, ephemeral runtime sockets, display/X11 forwarding,
+and host networking. Repository config is not a recurring settings overlay.
+
+All startup diagnostics go to stderr, leaving native print/RPC/ACP stdout
+untouched. The logo is omitted for print/protocol modes and non-terminal
+launches. Prompts, native arguments, full Docker commands, and credential values
+are never printed. Set `OMPD_NO_BANNER=1` to suppress both the logo and launch
+details; explicit `--pi-debug` inspection hints remain available.
+
 Wrapper options:
 
 | Option | Behavior |
@@ -224,7 +237,7 @@ Useful wrapper variables:
 | `OMPD_PROFILE` | Wrapper default profile |
 | `OMP_PROFILE`, `PI_PROFILE` | Native profile defaults |
 | `OMPD_DISPLAY` | Override display forwarding; empty disables it |
-| `OMPD_NO_BANNER` | Suppress launch summary |
+| `OMPD_NO_BANNER` | Any nonempty value suppresses the logo and launch details |
 
 Provider variables are forwarded only when set and only by name:
 
