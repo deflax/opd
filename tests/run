@@ -266,7 +266,7 @@ with open({str(host_calls)!r}, 'a') as log:
         substitutions = [
             ('-d /Applications/Utilities/XQuartz.app', f'-d "{quartz}"', 1),
             ('-d /Applications/XQuartz.app', f'-d "{quartz}"', 1),
-            ('/usr/bin/open -a XQuartz', f'"{mocked_bin / "open"}" -a XQuartz', 1),
+            ('/usr/bin/open -g -a XQuartz', f'"{mocked_bin / "open"}" -g -a XQuartz', 1),
             ('/opt/X11/bin/xhost', str(mocked_bin / 'xhost'), 2),
             ('-d /tmp/.X11-unix', f'-d "{socket}"', 1),
             ('source=/tmp/.X11-unix,', f'source={socket},', 1),
@@ -293,7 +293,7 @@ with open({str(host_calls)!r}, 'a') as log:
                 self.assertIn('DISPLAY=' + expected, values(call, '-e', '--env'))
                 calls = [json.loads(line) for line in host_calls.read_text().splitlines()]
                 self.assertEqual(calls, [
-                    {'command': 'open', 'args': ['-a', 'XQuartz'], 'display': display},
+                    {'command': 'open', 'args': ['-g', '-a', 'XQuartz'], 'display': display},
                     {'command': 'xhost', 'args': ['+127.0.0.1'], 'display': display or ':0'},
                     {'command': 'xhost', 'args': ['+localhost'], 'display': display or ':0'},
                 ])
@@ -310,7 +310,7 @@ with open({str(host_calls)!r}, 'a') as log:
                 self.assertIn('DISPLAY=' + override, values(call, '-e', '--env'))
                 calls = [json.loads(line) for line in host_calls.read_text().splitlines()]
                 self.assertEqual([entry['args'] for entry in calls],
-                                 [['-a', 'XQuartz'], ['+127.0.0.1'], ['+localhost']])
+                                 [['-g', '-a', 'XQuartz'], ['+127.0.0.1'], ['+localhost']])
                 self.assertTrue(all(entry['display'] == ':9' for entry in calls))
 
     def test_darwin_empty_display_override_disables_all_host_actions(self):

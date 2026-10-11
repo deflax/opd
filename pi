@@ -289,7 +289,7 @@ prepare_display() {
     case "$(uname -s)" in
         Darwin)
             if [[ -d /Applications/Utilities/XQuartz.app || -d /Applications/XQuartz.app ]]; then
-                /usr/bin/open -a XQuartz >/dev/null 2>&1 || true
+                /usr/bin/open -g -a XQuartz >/dev/null 2>&1 || true
                 xhost_bin="$(command -v xhost || true)"
                 [[ -n "$xhost_bin" || ! -x /opt/X11/bin/xhost ]] || xhost_bin=/opt/X11/bin/xhost
                 if [[ -n "$xhost_bin" ]]; then
