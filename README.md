@@ -192,7 +192,7 @@ workflow. Review those saved settings if you previously relied on an overlay.
 The wrapper does not load `config.local.yml` or inject/forward `PI_CONFIG_FILES`.
 Explicit native `--config` remains an opt-in overlay with native precedence.
 Repository config is still mounted read-only at `/config/ompd` for such explicit
-paths and the optional user-managed MCP launch configuration.
+paths. MCP configuration remains user-managed.
 
 An optional `config/models.yml` is also seeded once, preserving existing
 `models.yml`, `models.yaml`, or `models.json`, including empty files.
@@ -250,19 +250,19 @@ Native browser automation uses the image browser via
 `PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/playwright-chromium`. The launcher
 suppresses Chrome for Testing's informational banner in headed windows; it does
 not change the browser build or hide page-level permission prompts.
-Rendering and screenshot workarounds in `config/playwright-mcp.json` remain
-specific to the optional MCP server and are not imposed on native automation.
 
-Headless native browser use is the default. Headed use needs a working X11 or
-XQuartz display:
+The portable seed enables native browser automation with `browser.enabled: true`
+and selects headed operation with `browser.headless: false`. Existing profiles
+keep their saved settings; enable `browser.enabled` in native `/settings` if needed.
+Upstream defaults to headless when no preference is set. Headed use needs a working
+X11 or XQuartz display:
 
 ```text
 browser.open({headed:true,url:'https://example.com'})
 ```
 
-`config/playwright-mcp.json` is an optional Playwright MCP launch config mounted
-at `/config/ompd/playwright-mcp.json`. It is not registered automatically and is
-not copied into native config. MCP remains user-managed.
+Playwright MCP is installed but is not registered automatically. Its configuration
+remains user-managed and is separate from native browser settings.
 
 ## Security limits
 

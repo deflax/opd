@@ -19,10 +19,9 @@ behavior and do not replace real image builds or runtime checks.
   user seed/persisted preferences may override it. Explicit browser.open({headed:true,...})
   needs working X11/XQuartz. Native
   launch defaults include --no-sandbox; do not claim browser sandbox isolation.
-- config/playwright-mcp.json is preserved optional headed MCP launch config,
-  mounted read-only at /config/ompd/playwright-mcp.json. Do not auto-register it,
-  seed mcp.json, inject native config, or copy its sandbox/software flags into
-  native browser settings. No invented browser.args. MCP remains user-managed.
+- Playwright MCP is installed but not auto-registered; its configuration remains
+  user-managed. Do not seed mcp.json, inject native config, or copy MCP
+  sandbox/software flags into native browser settings. No invented browser.args.
 - Empty OMPD_DISPLAY disables forwarding and XQuartz startup/access side effects.
   Headed macOS requires Docker Desktop networking, XQuartz network clients, and
   local connection permissions. Verify both amd64 and arm64 with actual builds;

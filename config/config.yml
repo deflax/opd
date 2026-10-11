@@ -46,7 +46,7 @@ startup:
   checkUpdate: true
   changelogMode: summary
 browser:
-  enabled: false
+  enabled: true
   headless: false
   cmux: false
   tern: false
