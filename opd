@@ -417,6 +417,15 @@ EOF
     printf '  Runtime sockets: container-local tmpfs (ephemeral)\n'
     printf '  Display: %s\n  X11 socket: %s\n  Xauthority: %s\n' "${HOST_DISPLAY:-disabled}" "$X11_STATUS" "$XAUTHORITY_STATUS"
     printf '  Network: host (host services accessible)\n\n'
+    if [[ "$USED_TTY" == true && -t 2 ]]; then
+        # Move the banner into scrollback before native startup clears the screen.
+        local rows columns line
+        if read -r rows columns < <(stty size <&2 2>/dev/null) && [[ "$rows" =~ ^[1-9][0-9]*$ ]]; then
+            for ((line = 0; line < rows; line++)); do
+                printf '\n'
+            done
+        fi
+    fi
 }
 
 run_container() {
@@ -460,9 +469,6 @@ run_container() {
     print_start_banner >&2
     if [[ "$DEBUG_MODE" == true ]]; then
         printf 'Debug container: %s\n  docker logs %s\n  docker inspect %s\n  docker rm %s\n' "$CONTAINER_NAME" "$CONTAINER_NAME" "$CONTAINER_NAME" "$CONTAINER_NAME" >&2
-    fi
-    if [[ "$USED_TTY" == true && -t 2 && -z "${OPD_NO_BANNER:-}" ]]; then
-        sleep 2
     fi
     status=0
     # Without a container TTY, native prompt startup reads stdin until EOF.
