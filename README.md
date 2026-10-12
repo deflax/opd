@@ -59,6 +59,12 @@ not permanently disable a later `text` or `rpc-ui` mode. `--print`/`-p` and the
 `acp` command always suppress the TTY, even with a later `--mode text`. Tokens
 used as option values or passed after native `--` do not select a mode.
 
+For prompt launches without a container TTY, terminal-origin stdin is replaced
+with `/dev/null` so native startup reaches EOF instead of waiting for keyboard
+input. This covers `--print`/`-p`, JSON output, and text launches with redirected
+stdout. Actual pipes and redirected input files are preserved. RPC/ACP input and
+subcommand stdin remain attached, including when `--print` is also present.
+
 Interactive launches show a custom `opd` ASCII logo in the OCD style when
 stderr is also a terminal, then pause for two seconds before starting omp.
 Launch details report the image/container, selected

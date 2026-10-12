@@ -177,6 +177,7 @@ detect_machine_mode() {
     # Resolve command ownership separately: unlike profile bootstrap, the native
     # resolver consumes any successor of --plan before looking for a command.
     MACHINE_MODE=false
+    PROMPT_STDIN=false
     index=0; can_dispatch=true
     # resolveCliArgv leaves leading help/version untouched rather than hoisting
     # a later command-looking token such as `--help acp`.
@@ -222,6 +223,7 @@ detect_machine_mode() {
             index=$((index + 1))
         fi
     done
+    case "$native_mode" in text|json) PROMPT_STDIN=true ;; esac
     if [[ "$print_mode" == true ||
           "$native_mode" == rpc || "$native_mode" == json || "$native_mode" == acp ]]; then
         MACHINE_MODE=true
@@ -463,7 +465,13 @@ run_container() {
         sleep 2
     fi
     status=0
-    docker "${docker_args[@]}" <&0 &
+    # Without a container TTY, native prompt startup reads stdin until EOF.
+    # A host terminal is not a piped prompt; protocol/subcommand input stays live.
+    if [[ -t 0 && "$USED_TTY" == false && "$PROMPT_STDIN" == true ]]; then
+        docker "${docker_args[@]}" </dev/null &
+    else
+        docker "${docker_args[@]}" <&0 &
+    fi
     DOCKER_PID=$!
     wait "$DOCKER_PID" || status=$?
     DOCKER_PID=''

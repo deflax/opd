@@ -36,6 +36,10 @@ if image_status and (args[:2] == ['image', 'inspect'] or args[:1] == ['inspect']
 if args[:1] == ['build']:
     sys.exit(int(os.environ.get('MOCK_DOCKER_BUILD_STATUS', '0')))
 if args[:1] == ['run']:
+    if 'MOCK_DOCKER_READ_STDIN' in os.environ:
+        data = (sys.stdin.buffer.readline() if os.environ['MOCK_DOCKER_READ_STDIN'] == 'line'
+                else sys.stdin.buffer.read())
+        (root / 'stdin').write_bytes(data)
     if 'MOCK_DOCKER_STDOUT' in os.environ:
         sys.stdout.write(os.environ['MOCK_DOCKER_STDOUT'])
         sys.stdout.flush()
@@ -167,15 +171,19 @@ class LauncherTests(unittest.TestCase):
             result.append((args, json.loads(path.with_suffix('.json').read_text())))
         return result
 
-    def invoke_tty(self, *args, env=None, send_signal=None):
+    def invoke_tty(self, *args, env=None, send_signal=None, stdin_data=None,
+                   redirect_stdout=False):
         """Use a real PTY, with bounded waits and isolated child cleanup."""
         master, slave = pty.openpty()
         process = None
         before = termios.tcgetattr(slave)
+        if stdin_data is not None:
+            os.write(master, stdin_data)
         try:
             process = subprocess.Popen(
                 [str(self.repo / 'opd'), *args], cwd=self.cwd,
-                env={**self.env, **(env or {})}, stdin=slave, stdout=slave,
+                env={**self.env, **(env or {})}, stdin=slave,
+                stdout=subprocess.PIPE if redirect_stdout else slave,
                 stderr=subprocess.PIPE, start_new_session=True)
             if send_signal is not None:
                 deadline = time.monotonic() + 5
@@ -184,7 +192,7 @@ class LauncherTests(unittest.TestCase):
                         self.fail('Mock Docker did not become ready for the signal test')
                     time.sleep(0.01)
                 os.kill(process.pid, send_signal)
-            _, stderr = process.communicate(timeout=10)
+            captured_stdout, stderr = process.communicate(timeout=10)
             after = termios.tcgetattr(slave)
             if send_signal is not None:
                 # The wrapper may exit before its signalled child handles the
@@ -193,7 +201,7 @@ class LauncherTests(unittest.TestCase):
                 while not (self.log / 'signal').exists() and time.monotonic() < deadline:
                     time.sleep(0.01)
             os.set_blocking(master, False)
-            stdout = b''
+            stdout = captured_stdout or b''
             while True:
                 try:
                     chunk = os.read(master, 65536)
@@ -441,6 +449,45 @@ with open({str(host_calls)!r}, 'a') as log:
         call, _ = self.run_call()
         self.assertNotIn('--rm', call)
         self.assertNotIn('--opd-debug', call)
+
+    def test_terminal_prompt_input_reaches_eof_without_user_input(self):
+        scenarios = [
+            (['--', '--print', 'Explain this project'], False),
+            (['-p', 'prompt'], False),
+            (['--mode=json', 'prompt'], False),
+            (['--mode=rpc', '--mode=text', '--print', 'prompt'], False),
+            (['prompt'], True),
+        ]
+        for args, redirect in scenarios:
+            with self.subTest(args=args, redirect=redirect):
+                self.reset_log()
+                result, before, after = self.invoke_tty(
+                    *args, env={'MOCK_DOCKER_READ_STDIN': 'eof'},
+                    redirect_stdout=redirect)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((self.log / 'stdin').read_bytes(), b'')
+                self.assertEqual(before, after)
+
+    def test_real_piped_prompt_is_consumed_to_eof(self):
+        prompt = b'Explain this project\nwith another line\n'
+        result = subprocess.run(
+            [str(self.repo / 'opd'), '--', '--print'], cwd=self.cwd,
+            env={**self.env, 'MOCK_DOCKER_READ_STDIN': 'eof'}, input=prompt,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.log / 'stdin').read_bytes(), prompt)
+
+    def test_terminal_protocol_and_subcommand_input_remains_live(self):
+        for args in (['--mode=rpc'], ['--mode=acp'], ['acp'],
+                     ['--print', '--mode=rpc'], ['login']):
+            with self.subTest(args=args):
+                self.reset_log()
+                result, before, after = self.invoke_tty(
+                    *args, env={'MOCK_DOCKER_READ_STDIN': 'line'},
+                    stdin_data=b'input frame\n')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((self.log / 'stdin').read_bytes(), b'input frame\n')
+                self.assertEqual(before, after)
 
     def test_protocol_modes_suppress_tty_on_actual_terminal(self):
         scenarios = [[], ['acp'], ['--profile', 'work', 'acp'],
