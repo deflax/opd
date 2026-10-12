@@ -319,8 +319,11 @@ Symlinks inside `.cache` are unlinked, not followed.
 
 Native browser automation uses the image browser via
 `PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/playwright-chromium`. The launcher
-suppresses Chrome for Testing's informational banner in headed windows; it does
-not change the browser build or hide page-level permission prompts.
+suppresses Chrome for Testing's informational banner in headed windows and disables
+GPU acceleration to avoid observed container/X11 DRI3/nouveau hangs. This trades
+hardware acceleration for reliable rendering; it does not change the browser build
+or hide page-level permission prompts. Launcher changes require `./build --base`
+followed by `./build` to take effect in the image.
 
 The portable seed enables native browser automation with `browser.enabled: true`
 and selects headed operation with `browser.headless: false`. Existing profiles
