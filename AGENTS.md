@@ -1,17 +1,24 @@
 # Maintainer context
 
-Small Bash/Docker wrapper for compiled oh-my-pi `omp`, pinned to v18.9.1.
+Small Bash/Docker wrapper for compiled oh-my-pi `omp`.
 `build`/`Dockerfile` own the image; `opd` owns host launch; `clearcache` deletes
 only persistent `.cache` contents. Validate script syntax with `bash -n` and
 the hermetic wrapper test suite with `python3 tests/run`; these mock Docker
 behavior and do not replace real image builds or runtime checks.
+
+Do not assume a fixed omp version from these instructions.
+Dockerfile's `OMP_VERSION` is the default build version and may be overridden.
+Before checking version-specific native behavior, identify the installed version
+with `./opd -- --version` and consult the matching upstream source tag.
+If runtime verification is unavailable, use Dockerfile's version and state that
+the installed version is unverified.
 
 - Preserve the primary development-toolchain baseline: apt tools, Python language
   tooling, Terraform/terraform-ls, Node 24 language tooling, global Playwright MCP,
   and managed browser/FFmpeg aliases under /ms-playwright. Preserve the exact
   `npx @playwright/mcp install-browser chromium --with-deps` method and chrome
   executable discovery; do not infer browser branding from the alias. Use the signed NodeSource repo
-  and clean apt lists within installing layers. Install pinned native omp; no
+  and clean apt lists within installing layers. Install native omp at the selected build version; no
   second browser installation or Bun runtime. Keep robust UID/GID/macOS mapping.
 - Native browser executable lookup honors PUPPETEER_EXECUTABLE_PATH first; point
   it to /usr/local/bin/playwright-chromium. Keep PLAYWRIGHT_BROWSERS_PATH and MCP
@@ -41,7 +48,7 @@ behavior and do not replace real image builds or runtime checks.
   Last native `--profile` wins before native `--` or a registered non-launch
   command in the first residual argv position; launch/acp continue extraction.
   Bootstrap boundaries differ from resolver hoisting past leading global flags.
-  Mirror pinned flag tables: strings protect their next token, except bootstrap
+  Mirror the selected version's flag tables: strings protect their next token, except bootstrap
   `--plan` protects only value-like tokens; `--goal` protects even rejected
   flag-looking objectives. Preserve literal argv and leave validation to native.
   Reject conflicting normalized wrapper/native names. OMP_PROFILE wins whenever defined, even
@@ -95,11 +102,12 @@ behavior and do not replace real image builds or runtime checks.
   not presumed worktrees. MCP remains user-managed native persisted configuration.
 - Forward unknown native arguments literally; do not invent wrapper web/port
   features. Native terminal/print/RPC/ACP stay native.
-- Keep README aligned with behavior; use its official pinned upstream links.
-- Verify profile/settings rules against pinned source; source checks do not
-  substitute for real Docker runtime validation.
-  Sources: https://github.com/can1357/oh-my-pi/blob/v18.9.1/packages/utils/src/dirs.ts
-  and https://github.com/can1357/oh-my-pi/blob/v18.9.1/packages/coding-agent/src/config/settings.ts
-  CLI tables: https://github.com/can1357/oh-my-pi/blob/v18.9.1/packages/coding-agent/src/cli/flag-tables.ts
-  Bootstrap: https://github.com/can1357/oh-my-pi/blob/v18.9.1/packages/coding-agent/src/cli/profile-bootstrap.ts
-  Dispatch: https://github.com/can1357/oh-my-pi/blob/v18.9.1/packages/coding-agent/src/cli-commands.ts
+- Keep README aligned with behavior; use official upstream links matching the verified version.
+- Verify profile/settings rules against the matching upstream source tag; source
+  checks do not substitute for real Docker runtime validation.
+  In https://github.com/can1357/oh-my-pi/tree/<matching-tag>, consult:
+  - `packages/utils/src/dirs.ts`
+  - `packages/coding-agent/src/config/settings.ts`
+  - `packages/coding-agent/src/cli/flag-tables.ts`
+  - `packages/coding-agent/src/cli/profile-bootstrap.ts`
+  - `packages/coding-agent/src/cli-commands.ts`
