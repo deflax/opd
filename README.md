@@ -23,16 +23,15 @@ The repository supplies initial settings, not credentials. Each clone keeps its
 own provider authentication and subsequent settings in its persistent `data/`
 home. Do not commit or copy that home as part of the configuration template.
 
-The project executable and wrapper interface are now named `opd`. The former
-`pi` launcher, `--pi-*` flags, and `OMPD_*` variables have no compatibility
-aliases; use `opd`, `--opd-*`, and `OPD_*` instead. Default image tags are now
-`opd:latest` and `opd-base:latest`, so rebuild the images after upgrading.
+The project executable and wrapper interface are named `opd`.
+Default image tags are `opd:latest` and `opd-base:latest`, so rebuild the images 
+after upgrading.
+
 Existing persistent data is unchanged. User-managed MCP configuration and
 explicit native config paths remain opt-in; repository config is available at
 `/config/opd`.
 
-Legacy `PI_*` host settings are not consumed or forwarded; use `OMP_PROFILE`
-for native profile selection. The upstream installer's build-time
+Use `OMP_PROFILE` for native profile selection. The upstream installer's build-time
 `PI_INSTALL_DIR` is unrelated to the wrapper interface.
 
 Common calls:
