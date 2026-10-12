@@ -23,8 +23,6 @@ The repository supplies initial settings, not credentials. Each clone keeps its
 own provider authentication and subsequent settings in its persistent `data/`
 home. Do not commit or copy that home as part of the configuration template.
 
-## Rename from ompd
-
 The project executable and wrapper interface are now named `opd`. The former
 `pi` launcher, `--pi-*` flags, and `OMPD_*` variables have no compatibility
 aliases; use `opd`, `--opd-*`, and `OPD_*` instead. Default image tags are now
