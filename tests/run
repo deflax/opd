@@ -172,7 +172,7 @@ class LauncherTests(unittest.TestCase):
         return result
 
     def invoke_tty(self, *args, env=None, send_signal=None, stdin_data=None,
-                   redirect_stdout=False):
+                   redirect_stdout=False, terminal_stderr=False):
         """Use a real PTY, with bounded waits and isolated child cleanup."""
         master, slave = pty.openpty()
         process = None
@@ -184,7 +184,8 @@ class LauncherTests(unittest.TestCase):
                 [str(self.repo / 'opd'), *args], cwd=self.cwd,
                 env={**self.env, **(env or {})}, stdin=slave,
                 stdout=subprocess.PIPE if redirect_stdout else slave,
-                stderr=subprocess.PIPE, start_new_session=True)
+                stderr=slave if terminal_stderr else subprocess.PIPE,
+                start_new_session=True)
             if send_signal is not None:
                 deadline = time.monotonic() + 5
                 while not (self.log / 'ready').exists():
@@ -581,6 +582,27 @@ with open({str(host_calls)!r}, 'a') as log:
                 self.assertEqual(result.returncode, 37)
                 self.assertEqual(result.stdout.replace(b'\r\n', b'\n'), b'native\n')
                 self.assertEqual(result.stderr, b'')
+
+    def test_interactive_logo_returns_after_app_clears_terminal(self):
+        clear = '\x1b[2J\x1b[3J\x1b[H'
+        for args, env, visible in (
+                ([], {}, True),
+                ([], {'OPD_NO_BANNER': '1'}, False),
+                (['--mode', 'rpc'], {}, False)):
+            with self.subTest(args=args, banner=visible):
+                self.reset_log()
+                result, before, after = self.invoke_tty(
+                    *args, terminal_stderr=True,
+                    env={**env, 'MOCK_DOCKER_STDOUT': clear + 'app exited\n',
+                         'MOCK_DOCKER_STATUS': '37'})
+                self.assertEqual(result.returncode, 37)
+                self.assertEqual(before, after)
+                restored = result.stdout.split(clear.encode(), 1)[1]
+                if visible:
+                    self.assertIn(b'o-----o---o-----o', restored)
+                    self.assertNotIn(b'Launch details:', restored)
+                else:
+                    self.assertNotIn(b'o-----o---o-----o', restored)
 
     def test_signals_forward_status_and_restore_terminal(self):
         for number, status in ((signal.SIGINT, 130), (signal.SIGTERM, 143),

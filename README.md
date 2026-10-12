@@ -67,11 +67,10 @@ subcommand stdin remain attached, including when `--print` is also present.
 
 Interactive launches show a custom `opd` ASCII logo in the OCD style when
 stderr is also a terminal, then start omp immediately without an intentional delay.
-When terminal dimensions are available, the wrapper scrolls the banner and launch
-details into terminal scrollback before starting omp, so clearing the visible
-screen does not erase them. This adds one screen of blank lines only for
-interactive banners; it cannot prevent an application or terminal from explicitly
-clearing scrollback.
+After Docker exits, the wrapper restores terminal state and prints the logo again
+for interactive launches, so it remains visible even if the app cleared the screen
+or scrollback. Launch details are not repeated. Signal forwarding does not reprint
+the logo while Docker may still be running.
 Launch details report the image/container, selected
 profile and persistent state path, terminal allocation, cleanup policy,
 workspace/home/config mounts, ephemeral runtime sockets, display/X11 forwarding,

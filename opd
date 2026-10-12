@@ -338,6 +338,10 @@ cleanup() {
     fi
     if [[ "${USED_TTY:-false}" == true && -t 1 ]]; then
         printf '\033[?1000l\033[?1002l\033[?1003l\033[?1004l\033[?1006l\033[?2004l\033[?25h\033[0m' >&2
+        # Reprint only after Docker has exited, not while forwarding a signal.
+        if [[ -z "${DOCKER_PID:-}" ]]; then
+            print_logo >&2
+        fi
     fi
 }
 
@@ -381,9 +385,9 @@ prepare_workspace() {
     CONTAINER_WORKSPACE="/workspaces/$basename-${digest:0:12}"
 }
 
-print_start_banner() {
+print_logo() {
     [[ -z "${OPD_NO_BANNER:-}" ]] || return 0
-    if [[ "$USED_TTY" == true && -t 2 ]]; then
+    if [[ "${USED_TTY:-false}" == true && -t 2 ]]; then
         cat >&2 <<'EOF'
                    o
                   / \
@@ -403,6 +407,11 @@ print_start_banner() {
 
 EOF
     fi
+}
+
+print_start_banner() {
+    [[ -z "${OPD_NO_BANNER:-}" ]] || return 0
+    print_logo
     local terminal='not allocated (non-terminal stdin/stdout)' cleanup='remove container on exit'
     [[ "$MACHINE_MODE" != true ]] || terminal='not allocated (print/protocol mode)'
     [[ "$USED_TTY" != true ]] || terminal='allocated'
@@ -417,15 +426,6 @@ EOF
     printf '  Runtime sockets: container-local tmpfs (ephemeral)\n'
     printf '  Display: %s\n  X11 socket: %s\n  Xauthority: %s\n' "${HOST_DISPLAY:-disabled}" "$X11_STATUS" "$XAUTHORITY_STATUS"
     printf '  Network: host (host services accessible)\n\n'
-    if [[ "$USED_TTY" == true && -t 2 ]]; then
-        # Move the banner into scrollback before native startup clears the screen.
-        local rows columns line
-        if read -r rows columns < <(stty size <&2 2>/dev/null) && [[ "$rows" =~ ^[1-9][0-9]*$ ]]; then
-            for ((line = 0; line < rows; line++)); do
-                printf '\n'
-            done
-        fi
-    fi
 }
 
 run_container() {
