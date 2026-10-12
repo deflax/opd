@@ -86,6 +86,45 @@ Wrapper options:
 | `--opd-profile NAME` | Select native profile state and its first-launch config seed |
 | `--opd-debug` | Keep the container and print inspect/log/remove hints |
 
+## Linux terminal fonts
+
+Nerd Font icons require a patched font installed and selected on the **host**.
+Fonts inside the Docker image do not affect your terminal's rendering. Configure
+each machine separately; a working macOS font setup does not carry over to Linux.
+
+For Debian with KDE Konsole:
+
+1. Download **JetBrainsMono** from the [Nerd Fonts downloads](https://www.nerdfonts.com/font-downloads)
+   and extract the archive.
+2. Create the per-user font directory:
+   ```bash
+   mkdir -p ~/.local/share/fonts
+   ```
+   Copy the extracted `.ttf` files into that directory, then refresh the font cache:
+   ```bash
+   fc-cache -f
+   ```
+   If `fc-cache` is unavailable, install Debian's `fontconfig` package on the host.
+3. In Konsole, open **Settings → Edit Current Profile → Appearance → Font**.
+   Select **JetBrainsMono Nerd Font Mono**, not the unpatched **JetBrains Mono**.
+   Reopen the font picker if the newly installed font is not listed.
+4. In omp, open `/settings` and select **Symbol Preset → Nerd**. The repository
+   seed uses `symbolPreset: nerd`, but existing profiles retain their persisted
+   settings; editing the seed does not update them.
+
+Check the font outside omp, directly in a Bash shell in Konsole:
+
+```bash
+fc-match 'JetBrainsMono Nerd Font Mono'
+printf 'Powerline: \ue0b0  Folder: \uf07c  Branch: \ue0a0\n'
+```
+
+`fc-match` should report the patched font, not a fallback family such as DejaVu
+Sans. Boxes in the glyph check indicate a host font/profile problem. If the icons
+render correctly there but not in omp, check the selected profile's persisted
+**Symbol Preset**. Alternatively, select **Unicode** or **ASCII** in omp to avoid
+requiring a Nerd Font.
+
 ## Build
 
 Requirements: Docker, Bash, and `sha256sum` or `shasum`.
