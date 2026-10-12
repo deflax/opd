@@ -57,7 +57,7 @@ tui:
   codexResetFireworks: true
   titleSpinner: braille
   hyperlinks: auto
-  mouse: true
+  mouse: false
   tight: false
   reactions: true
   vimMode: false
