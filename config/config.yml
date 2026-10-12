@@ -83,8 +83,7 @@ task:
     task: openai-codex/gpt-6.1-sol
     reviewer: openai-codex/gpt-6-astra
     security-reviewer: openai-codex/gpt-6-astra
-  disabledAgents:
-    []
+  disabledAgents: []
   enableEffort: true
   maxEffort: high
   completionProbe: false
@@ -118,8 +117,7 @@ commands:
   enableClaudeProject: false
   enableOpencodeProject: false
 providers:
-  maxInFlightRequests:
-    {}
+  maxInFlightRequests: {}
   antigravityEndpoint: auto
   fetch: auto
   fireworksTier: standard
