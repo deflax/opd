@@ -583,7 +583,7 @@ with open({str(host_calls)!r}, 'a') as log:
                 self.assertEqual(result.stdout.replace(b'\r\n', b'\n'), b'native\n')
                 self.assertEqual(result.stderr, b'')
 
-    def test_interactive_logo_returns_after_app_clears_terminal(self):
+    def test_interactive_banner_returns_after_app_clears_terminal(self):
         clear = '\x1b[2J\x1b[3J\x1b[H'
         for args, env, visible in (
                 ([], {}, True),
@@ -600,7 +600,10 @@ with open({str(host_calls)!r}, 'a') as log:
                 restored = result.stdout.split(clear.encode(), 1)[1]
                 if visible:
                     self.assertIn(b'o-----o---o-----o', restored)
-                    self.assertNotIn(b'Launch details:', restored)
+                    self.assertIn(b'Launch details:', restored)
+                    self.assertIn(b'  Workspace:', restored)
+                    self.assertIn(b'  Persistent home:', restored)
+                    self.assertIn(b'  Network: host', restored)
                 else:
                     self.assertNotIn(b'o-----o---o-----o', restored)
 

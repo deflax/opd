@@ -339,8 +339,8 @@ cleanup() {
     if [[ "${USED_TTY:-false}" == true && -t 1 ]]; then
         printf '\033[?1000l\033[?1002l\033[?1003l\033[?1004l\033[?1006l\033[?2004l\033[?25h\033[0m' >&2
         # Reprint only after Docker has exited, not while forwarding a signal.
-        if [[ -z "${DOCKER_PID:-}" ]]; then
-            print_logo >&2
+        if [[ -z "${DOCKER_PID:-}" && -t 2 ]]; then
+            print_start_banner >&2
         fi
     fi
 }
