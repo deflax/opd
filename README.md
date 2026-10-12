@@ -1,10 +1,6 @@
 # opd
 
-Docker wrapper for native `omp`, pinned to **v18.9.1**.
-
-Official upstream: [release](https://github.com/can1357/oh-my-pi/releases/tag/v18.9.1),
-[source](https://github.com/can1357/oh-my-pi/tree/v18.9.1), and
-[pinned installer](https://github.com/can1357/oh-my-pi/blob/v18.9.1/scripts/install.sh).
+Docker wrapper for native `omp`.
 
 `./build` creates the image. `./opd` runs `omp` inside it with the current
 project mounted under `/workspaces/...` and persistent state in `data/`.
