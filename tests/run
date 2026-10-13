@@ -780,6 +780,8 @@ with open({str(host_calls)!r}, 'a') as log:
             (['--alias=grep', '--profile=work'], 'work'),
             (['--profile=work', 'grep', '--profile', '../path'], 'work'),
             (['grep', '--profile', '../path'], 'default'),
+            (['auth', '--profile', '../path'], 'default'),
+            (['session', '--profile=../path'], 'default'),
             (['img', '--profile', '../path'], 'default'),
             (['anonymize', '--profile', '../path'], 'default'),
             (['plugins', '--profile=../path'], 'default'),
@@ -837,6 +839,8 @@ with open({str(host_calls)!r}, 'a') as log:
             ['grep', '--print', '--mode=rpc'],
             ['img', '--mode', 'rpc'],
             ['anonymize', '--print', '--mode=rpc'],
+            ['auth', '--print', '--mode=rpc'],
+            ['session', '--mode', 'rpc'],
             # Resolver treats --plan as required-value, unlike bootstrap.
             ['--plan', '--unknown', 'anonymize', '--mode=rpc'],
             ['--no-ui', 'grep', '--mode=rpc'],

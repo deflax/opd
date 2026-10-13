@@ -142,6 +142,12 @@ OPD_IMAGE=my-opd ./build
 ./build --build-arg USER_UID=1000 --build-arg USER_GID=1000
 ```
 
+The default native omp version is [18.10.4](https://github.com/can1357/oh-my-pi/tree/v18.10.4).
+Run `./build` to install it in a new runtime image; the existing base is reused.
+Override the version with `./build --build-arg OMP_VERSION=<version>`.
+The wrapper's mirrored profile/CLI tables were checked against that tag,
+including `--restore` and the `auth`/`session` command boundaries.
+
 Linux builds use the host UID/GID by default. macOS builds use `1000:1000`
 because Docker Desktop does not need the host account IDs inside the image.
 Existing files under `data/` must be writable by the image user.

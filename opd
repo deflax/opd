@@ -38,7 +38,7 @@ EOF
 }
 
 normalize_profile() {
-    # oh-my-pi v18.9.1 packages/utils/src/dirs.ts normalizeProfileName.
+    # oh-my-pi v18.10.4 packages/utils/src/dirs.ts normalizeProfileName.
     # POSIX/Bash whitespace trimming, not JavaScript's full Unicode trim set.
     local value="$1" LC_ALL=C
     value="${value#"${value%%[![:space:]]*}"}"
@@ -51,7 +51,7 @@ normalize_profile() {
 }
 
 native_flag_kind() {
-    # Mirrored oh-my-pi v18.9.1 coding-agent/src/cli/flag-tables.ts.
+    # Mirrored oh-my-pi v18.10.4 coding-agent/src/cli/flag-tables.ts.
     # --plan is bootstrap-shadowable; unknown long flags consume value-like
     # successors only. Inline values never consume a separate argv token.
     FLAG_KIND=none
@@ -64,7 +64,7 @@ native_flag_kind() {
         --thinking|--export|--hook|--extension|-e|--trusted-extension|--plugin-dir|\
         --skills|--approval-mode)
             FLAG_KIND=string ;;
-        --resume|-r|--session) FLAG_KIND=optional ;;
+        --resume|-r|--restore|--session) FLAG_KIND=optional ;;
         --help|--version|--allow-home|--continue|--from-claude|--from-codex|\
         --no-session|--no-tools|--no-lsp|--no-pty|--hide-thinking|--advisor|\
         --external-thinking|--prewalk|--no-prewalk|--plan-yolo|--print|--print-thoughts|\
@@ -84,12 +84,12 @@ native_consumes_value() {
 }
 
 native_is_subcommand() {
-    # oh-my-pi v18.9.1 coding-agent/src/cli-commands.ts names + aliases.
+    # oh-my-pi v18.10.4 coding-agent/src/cli-commands.ts names + aliases.
     case "$1" in
-        launch|acp|auth-broker|auth-gateway|agents|anonymize|bench|browser-relay|\
+        launch|acp|auth|auth-broker|auth-gateway|agents|anonymize|bench|browser-relay|\
         cleanse|collab|commit|completions|__complete|compress|config|dry-balance|\
         find|gc|grep|gallery|git|grievances|images|img|if-bench|install|join|login|\
-        models|plugin|plugins|predict|ps|say|clip|play|share|setup|shell|read|render|\
+        models|plugin|plugins|predict|ps|say|clip|play|share|session|setup|shell|read|render|\
         skill|skills|ssh|stats|stream|update|usage|tiny-models|token|toks|ttsr|\
         worktree|wt|search|q|web-search) return 0 ;;
         *) return 1 ;;
@@ -117,7 +117,7 @@ parse_args() {
 }
 
 parse_native_args() {
-    # Mirror v18.9.1 cli/profile-bootstrap.ts without changing raw OMP_ARGS.
+    # Mirror v18.10.4 cli/profile-bootstrap.ts without changing raw OMP_ARGS.
     # Only the first residual token can end global profile extraction at a
     # command boundary; launch/acp keep accepting launch-shaped global flags.
     local index arg value native_profile='' can_dispatch=true boundary=false
