@@ -153,6 +153,11 @@ The image is built from two separate Dockerfiles:
 - `Dockerfile` builds `opd:latest` from that base, installing native omp and
   creating the UID/GID-mapped runtime user.
 
+The base includes C/C++ build tools (`build-essential`, CMake, Ninja, and
+pkg-config), Python development headers and venv support, ALSA/JACK development
+libraries, the PortAudio runtime (`libportaudio2`), and X11, Xext, Xinerama,
+Xrandr, Xcursor, FreeType, and Fontconfig development libraries.
+
 `./build` creates the base automatically if its tag is absent locally; otherwise
 it reuses it without rebuilding it. Changes to `Dockerfile.base` or
 `playwright-chromium-launcher` require an explicit `./build --base`, followed by
@@ -376,11 +381,17 @@ Docker smoke checks on a Docker-enabled host:
 docker run --rm --entrypoint /bin/bash opd:latest -lc '
   set -e
   for tool in git ssh rg fd fzf jq yq python basedpyright-langserver pytest \
-    go gcc make cmake terraform terraform-ls node npm tsc \
+    go gcc g++ make cmake ninja pkg-config terraform terraform-ls node npm tsc \
     typescript-language-server vue-language-server intelephense ast-grep biome \
     playwright-mcp playwright-ffmpeg ffmpeg pdftotext qpdf ocrmypdf tesseract; do
     command -v "$tool"
   done
+  pkg-config --exists alsa jack x11 xext xinerama xrandr xcursor freetype2 fontconfig
+  printf "%s\n" "#include <iostream>" \
+    "int main() { std::cout << 42 << std::endl; }" \
+    | g++ -x c++ - -o /tmp/opd-cpp-smoke
+  test "$(/tmp/opd-cpp-smoke)" = 42
+  rm /tmp/opd-cpp-smoke
   omp --version
   playwright-chromium --version
 '
