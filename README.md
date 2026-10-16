@@ -142,7 +142,7 @@ OPD_IMAGE=my-opd ./build
 ./build --build-arg USER_UID=1000 --build-arg USER_GID=1000
 ```
 
-The default native omp version is [18.10.4](https://github.com/can1357/oh-my-pi/tree/v18.10.4).
+The default native omp version is [18.11.1](https://github.com/can1357/oh-my-pi/tree/v18.11.1).
 Run `./build` to install it in a new runtime image; the existing base is reused.
 Override the version with `./build --build-arg OMP_VERSION=<version>`.
 The wrapper's mirrored profile/CLI tables were checked against that tag,
