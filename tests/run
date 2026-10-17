@@ -667,6 +667,58 @@ with open({str(host_calls)!r}, 'a') as log:
                 self.assertFalse(any(item.split('=', 1)[0] == 'PI_CONFIG_FILES'
                                      for item in values(call, '-e', '--env')))
 
+    def test_personality_is_first_launch_only_default_and_named(self):
+        for profile in (None, 'personal'):
+            with self.subTest(profile=profile):
+                args = ['--opd-profile', profile] if profile else []
+                self.reset_log()
+                self.launch(*args)
+                personality = self.agent(profile) / 'PERSONALITY.md'
+                self.assertEqual(personality.stat().st_mode & 0o777, 0o600)
+                personality.write_text('My own communication style.\n')
+                self.reset_log()
+                self.launch(*args)
+                self.assertEqual(personality.read_text(), 'My own communication style.\n')
+                personality.unlink()
+                self.reset_log()
+                self.launch(*args)
+                self.assertFalse(personality.exists(), 'Do not reseed a removed personality')
+
+    def test_personality_does_not_migrate_existing_profiles(self):
+        for index, name in enumerate(('config.yml', 'config.yaml', 'settings.json')):
+            with self.subTest(name=name):
+                profile = f'existing-{index}'
+                agent = self.agent(profile)
+                agent.mkdir(parents=True)
+                (agent / name).write_bytes(b'')
+                self.reset_log()
+                self.launch('--opd-profile', profile)
+                self.assertFalse((agent / 'PERSONALITY.md').exists())
+
+    def test_personality_preserves_empty_and_linked_overrides(self):
+        for kind in ('empty', 'linked', 'dangling'):
+            with self.subTest(kind=kind):
+                agent = self.agent(kind)
+                agent.mkdir(parents=True)
+                personality = agent / 'PERSONALITY.md'
+                target = self.case / f'{kind}-personality.md'
+                if kind == 'empty':
+                    personality.write_bytes(b'')
+                else:
+                    if kind == 'linked':
+                        target.write_text('External personality.\n')
+                    personality.symlink_to(target)
+                self.reset_log()
+                self.launch('--opd-profile', kind)
+                if kind == 'empty':
+                    self.assertEqual(personality.read_bytes(), b'')
+                else:
+                    self.assertTrue(personality.is_symlink())
+                    if kind == 'linked':
+                        self.assertEqual(target.read_text(), 'External personality.\n')
+                    else:
+                        self.assertFalse(target.exists())
+
     def test_wrapper_named_profile(self):
         call = self.launch('--opd-profile', 'work')
         self.seeded_config('work')

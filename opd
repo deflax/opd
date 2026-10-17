@@ -273,6 +273,9 @@ prepare_data() {
     done
     local template="$SCRIPT_DIR/config/profiles/$SELECTED_PROFILE.yml"
     [[ -f "$template" ]] || template="$SCRIPT_DIR/config/config.yml"
+    if [[ -f "$SCRIPT_DIR/config/PERSONALITY.md" ]]; then
+        seed_config "$SCRIPT_DIR/config/PERSONALITY.md" PERSONALITY.md config.yml config.yaml settings.json
+    fi
     seed_config "$template" config.yml config.yaml settings.json
     if [[ -f "$SCRIPT_DIR/config/models.yml" ]]; then
         seed_config "$SCRIPT_DIR/config/models.yml" models.yml models.yaml models.json

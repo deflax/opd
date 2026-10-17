@@ -283,6 +283,8 @@ paths. MCP configuration remains user-managed.
 An optional `config/models.yml` is also seeded once, preserving existing
 `models.yml`, `models.yaml`, or `models.json`, including empty files.
 
+`config/PERSONALITY.md` provides a custom text personality, seeded only for newly initialized profiles.
+
 The bundled standalone `ollama` seed maps the main session and native task
 agents to a local Ollama model, with task concurrency four:
 
