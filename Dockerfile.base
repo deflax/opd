@@ -113,6 +113,25 @@ RUN npm install -g --prefix /usr/local \
     typescript@latest \
     typescript-language-server@latest
 
+ARG CODEMAP_VERSION=4.6.0
+RUN set -eux; \
+    arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "$arch" in \
+        amd64|arm64) ;; \
+        *) echo "Unsupported architecture for CodeMap: $arch" >&2; exit 1 ;; \
+    esac; \
+    archive="codemap_${CODEMAP_VERSION}_linux_${arch}.tar.gz"; \
+    release_url="https://github.com/JordanCoin/codemap/releases/download/v${CODEMAP_VERSION}"; \
+    tmpdir="$(mktemp -d)"; \
+    curl -fsSL "$release_url/$archive" -o "$tmpdir/$archive"; \
+    curl -fsSL "$release_url/checksums.txt" -o "$tmpdir/checksums.txt"; \
+    (cd "$tmpdir" && sha256sum --check --ignore-missing checksums.txt); \
+    tar -xzf "$tmpdir/$archive" -C "$tmpdir" codemap; \
+    install -m 0755 "$tmpdir/codemap" /usr/local/bin/codemap; \
+    rm -rf "$tmpdir"; \
+    codemap --version; \
+    ast-grep --version
+
 COPY --chmod=0755 playwright-chromium-launcher /usr/local/bin/playwright-chromium
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright

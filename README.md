@@ -187,6 +187,35 @@ OPD_BASE_IMAGE=opd-base:arm64 OPD_IMAGE=opd:arm64 ./build --platform linux/arm64
 Direct Docker builds must also build or pull the base first, then select it with
 `docker build --build-arg BASE_IMAGE=...` when not using `opd-base:latest`.
 
+### CodeMap
+
+[JordanCoin/codemap v4.6.0](https://github.com/JordanCoin/codemap/tree/v4.6.0)
+is installed on PATH in the base image for Linux amd64 and arm64. It reuses the
+existing `ast-grep` installation for dependency analysis; no second copy is installed.
+To add it to an existing image:
+
+```bash
+./build --base
+./build
+```
+
+Override its version when building the base with
+`./build --base --build-arg CODEMAP_VERSION=<version>`.
+
+Inside an omp session, ask it to run `codemap .` for a project map,
+`codemap --deps .` for dependencies, or `codemap --importers path/to/file`
+for dependents. For example:
+
+```bash
+opd -- --print 'Run codemap . and summarize this project architecture.'
+```
+
+This makes the CLI available, not an automatically invoked native omp tool.
+No hooks, skills, prompts, or MCP registrations are injected. Optional MCP
+configuration is user-managed; the server command inside the container is
+`codemap mcp`. Do not use `codemap setup` as an omp integration step: its
+automatic configuration targets Claude Code and Codex, not omp.
+
 ## Profiles and state
 
 Default persistent home:
@@ -397,7 +426,7 @@ docker run --rm --entrypoint /bin/bash opd:latest -lc '
   set -e
   for tool in git ssh rg fd fzf jq yq python basedpyright-langserver pytest \
     go gcc g++ make cmake ninja pkg-config terraform terraform-ls node npm tsc \
-    typescript-language-server vue-language-server intelephense ast-grep biome \
+    typescript-language-server vue-language-server intelephense ast-grep codemap biome \
     playwright-mcp playwright-ffmpeg ffmpeg pdftotext qpdf ocrmypdf tesseract; do
     command -v "$tool"
   done
@@ -408,6 +437,7 @@ docker run --rm --entrypoint /bin/bash opd:latest -lc '
   test "$(/tmp/opd-cpp-smoke)" = 42
   rm /tmp/opd-cpp-smoke
   omp --version
+  codemap --version
   playwright-chromium --version
 '
 
