@@ -588,7 +588,10 @@ with open({str(host_calls)!r}, 'a') as log:
         for args, env, visible in (
                 ([], {}, True),
                 ([], {'OPD_NO_BANNER': '1'}, False),
-                (['--mode', 'rpc'], {}, False)):
+                (['--mode', 'rpc'], {}, False),
+                (['--model', 'example/model'], {}, False),
+                (['--opd-profile', 'work'], {}, False),
+                (['--'], {}, False)):
             with self.subTest(args=args, banner=visible):
                 self.reset_log()
                 result, before, after = self.invoke_tty(
@@ -606,6 +609,7 @@ with open({str(host_calls)!r}, 'a') as log:
                     self.assertIn(b'  Network: host', restored)
                 else:
                     self.assertNotIn(b'o-----o---o-----o', restored)
+                    self.assertNotIn(b'Launch details:', restored)
 
     def test_signals_forward_status_and_restore_terminal(self):
         for number, status in ((signal.SIGINT, 130), (signal.SIGTERM, 143),

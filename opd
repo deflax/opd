@@ -341,8 +341,8 @@ cleanup() {
     fi
     if [[ "${USED_TTY:-false}" == true && -t 1 ]]; then
         printf '\033[?1000l\033[?1002l\033[?1003l\033[?1004l\033[?1006l\033[?2004l\033[?25h\033[0m' >&2
-        # Reprint only after Docker has exited, not while forwarding a signal.
-        if [[ -z "${DOCKER_PID:-}" && -t 2 ]]; then
+        # Reprint only for bare launches after Docker exits, never during signal forwarding.
+        if [[ "$REPRINT_BANNER" == true && -z "${DOCKER_PID:-}" && -t 2 ]]; then
             print_start_banner >&2
         fi
     fi
@@ -489,6 +489,8 @@ run_container() {
 }
 
 main() {
+    REPRINT_BANNER=false
+    [[ $# -ne 0 ]] || REPRINT_BANNER=true
     parse_args "$@"
     prepare_runtime
     prepare_workspace

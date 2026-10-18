@@ -67,10 +67,12 @@ subcommand stdin remain attached, including when `--print` is also present.
 
 Interactive launches show a custom `opd` ASCII logo in the OCD style when
 stderr is also a terminal, then start omp immediately without an intentional delay.
-After Docker exits, the wrapper restores terminal state and prints the full banner
-again (logo and launch details) for interactive launches with terminal stderr,
-so it remains visible even if the app cleared the screen or scrollback. Signal
-forwarding does not reprint the banner while Docker may still be running.
+After Docker exits, the wrapper restores terminal state. Only a bare `opd`
+launch (no command-line arguments) prints the full banner again (logo and launch
+details) for interactive launches with terminal stderr, so it remains visible
+even if the app cleared the screen or scrollback. Passing any arguments skips
+this post-exit banner without changing startup output. Signal forwarding does
+not reprint the banner while Docker may still be running.
 Launch details report the image/container, selected
 profile and persistent state path, terminal allocation, cleanup policy,
 workspace/home/config mounts, ephemeral runtime sockets, display/X11 forwarding,
