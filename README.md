@@ -257,6 +257,11 @@ Seeds are copied as-is: the wrapper does not inject model, browser, or concurren
 preferences. Native `task.maxConcurrency` defaults to 32 unless a seed or saved
 settings sets it explicitly.
 
+The base seed assigns `scout` and `sonic` to `openai-codex/gpt-6-luna`.
+The planning role uses `openai-codex/gpt-6-astra:medium`; the default and task
+model roles retain `openai-codex/gpt-6.1-sol:medium`.
+Other model-role and worker assignments are configured independently.
+
 After seeding, use native `/settings`, `config set`, or edit the persisted file:
 
 | Profile | Host config path |
