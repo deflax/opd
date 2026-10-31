@@ -287,8 +287,10 @@ preferences. Native `task.maxConcurrency` defaults to 32 unless a seed or saved
 settings sets it explicitly.
 
 The base seed assigns `scout` and `sonic` to `openai-codex/gpt-6-luna`.
-The planning role uses `openai-codex/gpt-6-astra:medium`; the default and task
-model roles retain `openai-codex/gpt-6.1-sol:medium`.
+The planning and task roles use `openai-codex/gpt-6-astra:medium`, and the
+general-purpose `task` worker override uses `openai-codex/gpt-6-astra`.
+The default role stays on `openai-codex/gpt-6.1-sol:medium`: Sol handles the
+main conversation while Astra handles general-purpose delegated work.
 Other model-role and worker assignments are configured independently.
 
 After seeding, use native `/settings`, `config set`, or edit the persisted file:
