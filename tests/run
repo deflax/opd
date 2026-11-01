@@ -230,6 +230,10 @@ class LauncherTests(unittest.TestCase):
     def run_call(self):
         calls = [(args, record) for args, record in self.calls() if args[:1] == ['run']]
         self.assertEqual(len(calls), 1, 'Expected exactly one docker run')
+        # Every launch path, including profiles, debug and TTY modes, must keep
+        # the mandatory policy. Native arguments are not Docker options.
+        args = calls[0][0]
+        self.assert_graphics_security(args[:args.index('/usr/local/bin/omp')])
         return calls[0]
 
     def reset_log(self):
@@ -305,7 +309,10 @@ with open({str(host_calls)!r}, 'a') as log:
         return devices
 
     def assert_graphics_security(self, call):
-        self.assertEqual(values(call, '--security-opt'), ['no-new-privileges:true'])
+        self.assertEqual(values(call, '--security-opt'), [
+            'no-new-privileges:true',
+            f'seccomp={self.repo.resolve() / "browser-seccomp.json"}',
+        ])
         self.assertEqual(values(call, '--cap-drop'), ['ALL'])
         self.assertEqual(set(values(call, '--cap-add')), {'CHOWN', 'SETUID', 'SETGID'})
         self.assertNotIn('--privileged', call)
@@ -314,22 +321,87 @@ with open({str(host_calls)!r}, 'a') as log:
                              for path in mounts(call)))
         self.assertEqual(values(call, '--user'), ['coder'])
 
-    def test_invalid_graphics_selections_fail_before_state_and_display(self):
+    def test_invalid_seccomp_profile_fails_before_docker_state_and_display(self):
         host_calls, _ = self.mock_display('Darwin')
-        for name, invalid in (
-                ('OPD_GPU', ('', 'OFF', 'Software', 'auto', ' off', 'off ', 'off\n',
-                             'software --privileged')),
-                ('OPD_BROWSER_SANDBOX', ('', 'true', 'false', 'Enabled', ' enabled',
-                                         'enabled ', 'disabled\n'))):
-            for value in invalid:
-                with self.subTest(name=name, value=value):
-                    result = self.invoke(env={name: value})
+        policy = self.repo / 'browser-seccomp.json'
+        policy.unlink()
+        for existing_home in (False, True):
+            data = self.repo / 'data'
+            if existing_home:
+                data.mkdir()
+                (data / 'sentinel').write_text('existing state must stay untouched\n')
+            before = tree_metadata(data)
+            for layout in ('missing', 'directory', 'broken-link'):
+                with self.subTest(existing_home=existing_home, layout=layout):
+                    if layout == 'directory':
+                        policy.mkdir()
+                    elif layout == 'broken-link':
+                        policy.symlink_to(self.case / 'missing-policy.json')
+                    result = self.invoke()
                     self.assertNotEqual(result.returncode, 0)
                     self.assertEqual(result.stdout, b'')
-                    self.assertIn(name.encode(), result.stderr)
-                    self.assertFalse((self.repo / 'data').exists())
+                    self.assertIn(b'required browser seccomp policy', result.stderr)
+                    self.assertIn(os.fsencode(policy), result.stderr)
+                    self.assertEqual(tree_metadata(data), before)
                     self.assertFalse(host_calls.exists())
                     self.assertEqual(self.calls(), [])
+                    if layout == 'directory':
+                        policy.rmdir()
+                    elif layout == 'broken-link':
+                        policy.unlink()
+
+    def test_unreadable_seccomp_profile_fails_before_docker_state_and_display(self):
+        host_calls, _ = self.mock_display('Darwin')
+        credentials = {}
+        if os.geteuid() == 0:
+            # Root bypasses mode bits. Drop privileges only in the child; make
+            # our private fixtures traversable without changing host directories.
+            if any(not directory.stat().st_mode & 0o001
+                   for directory in self.root.parents):
+                self.skipTest('Temporary directory ancestors are not world-traversable')
+            self.root.chmod(0o755)
+            self.case.chmod(0o755)
+            credentials = {'user': 65534, 'group': 65534, 'extra_groups': []}
+        policy = self.repo / 'browser-seccomp.json'
+        mode = policy.stat().st_mode & 0o777
+        policy.chmod(0)
+        try:
+            result = subprocess.run(
+                [str(self.repo / 'opd')], cwd=self.cwd, env=self.env,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=15, **credentials)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, b'')
+            self.assertIn(b'required browser seccomp policy', result.stderr)
+            self.assertIn(os.fsencode(policy), result.stderr)
+            self.assertFalse((self.repo / 'data').exists())
+            self.assertFalse(host_calls.exists())
+            self.assertEqual(self.calls(), [])
+        finally:
+            policy.chmod(mode)
+
+    def test_seccomp_docker_failure_surfaces_without_retry(self):
+        failure = 'failed to load seccomp profile\n'
+        result = self.invoke(env={'MOCK_DOCKER_STATUS': '125',
+                                  'MOCK_DOCKER_STDERR': failure})
+        self.assertEqual(result.returncode, 125)
+        self.assertEqual(result.stdout, b'')
+        self.assertIn(failure.encode(), result.stderr)
+        call, _ = self.run_call()
+        self.assert_graphics_security(call)
+
+    def test_invalid_graphics_selections_fail_before_state_and_display(self):
+        host_calls, _ = self.mock_display('Darwin')
+        for value in ('', 'OFF', 'Software', 'auto', ' off', 'off ', 'off\n',
+                      'software --privileged'):
+            with self.subTest(value=value):
+                result = self.invoke(env={'OPD_GPU': value})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, b'')
+                self.assertIn(b'OPD_GPU', result.stderr)
+                self.assertFalse((self.repo / 'data').exists())
+                self.assertFalse(host_calls.exists())
+                self.assertEqual(self.calls(), [])
 
     def test_hardware_modes_reject_non_linux_before_state_and_display(self):
         host_calls, _ = self.mock_display('Darwin')
@@ -345,34 +417,28 @@ with open({str(host_calls)!r}, 'a') as log:
     def test_portable_modes_keep_device_isolation_and_sandbox_security(self):
         self.mock_display('Darwin')
         for mode in ('off', 'software'):
-            for sandbox in ('disabled', 'enabled'):
-                with self.subTest(mode=mode, sandbox=sandbox):
-                    self.reset_log()
-                    result = self.invoke(env={
-                        'OPD_GPU': mode, 'OPD_BROWSER_SANDBOX': sandbox,
-                        'NVIDIA_VISIBLE_DEVICES': 'all',
-                        'NVIDIA_DRIVER_CAPABILITIES': 'all',
-                        'OPD_DOCKER_ARGS': '--privileged --device /dev',
-                    })
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    call, _ = self.run_call()
-                    self.assert_graphics_security(call)
-                    self.assertEqual(values(call, '--device', '--gpus', '--group-add'), [])
-                    environment = values(call, '-e', '--env')
-                    self.assertIn('OPD_GPU=' + mode, environment)
-                    self.assertIn('OPD_BROWSER_SANDBOX=' + sandbox, environment)
-                    self.assertFalse(any(item.startswith(('NVIDIA_', 'OPD_DOCKER_ARGS'))
-                                         for item in environment))
-                    self.assertIn(('Browser graphics: ' + mode).encode(), result.stderr)
-                    self.assertIn(('Browser sandbox: ' + sandbox).encode(), result.stderr)
-                    if sandbox == 'enabled':
-                        self.assertIn(b'experimental opt-in', result.stderr)
-                    self.seeded_config()
+            with self.subTest(mode=mode):
+                self.reset_log()
+                result = self.invoke(env={
+                    'OPD_GPU': mode,
+                    'NVIDIA_VISIBLE_DEVICES': 'all',
+                    'NVIDIA_DRIVER_CAPABILITIES': 'all',
+                    'OPD_DOCKER_ARGS': '--privileged --device /dev',
+                })
+                self.assertEqual(result.returncode, 0, result.stderr)
+                call, _ = self.run_call()
+                self.assert_graphics_security(call)
+                self.assertEqual(values(call, '--device', '--gpus', '--group-add'), [])
+                environment = values(call, '-e', '--env')
+                self.assertIn('OPD_GPU=' + mode, environment)
+                self.assertFalse(any(item.startswith(('NVIDIA_', 'OPD_DOCKER_ARGS'))
+                                     for item in environment))
+                self.seeded_config()
 
     def test_nvidia_requests_graphics_without_weakening_security(self):
         self.mock_display('Linux')
         result = self.invoke(env={
-            'OPD_GPU': 'nvidia', 'OPD_BROWSER_SANDBOX': 'enabled',
+            'OPD_GPU': 'nvidia',
             'NVIDIA_DRIVER_CAPABILITIES': 'all', 'NVIDIA_VISIBLE_DEVICES': 'none',
         })
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -383,8 +449,6 @@ with open({str(host_calls)!r}, 'a') as log:
         environment = values(call, '-e', '--env')
         self.assertFalse(any(item.startswith('NVIDIA_') for item in environment))
         self.assertIn('OPD_GPU=nvidia', environment)
-        self.assertIn('OPD_BROWSER_SANDBOX=enabled', environment)
-        self.assertIn(b'renderer not verified', result.stderr)
         self.seeded_config()
 
     def test_nvidia_toolkit_failure_surfaces_without_software_retry(self):
@@ -593,7 +657,6 @@ with open({str(host_calls)!r}, 'a') as log:
         self.assertEqual(values(call, '--device', '--gpus', '--group-add'), [])
         environment = values(call, '-e', '--env')
         self.assertIn('OPD_GPU=off', environment)
-        self.assertIn('OPD_BROWSER_SANDBOX=disabled', environment)
         self.assertFalse(any(item.startswith('NVIDIA_') for item in environment))
         self.assertEqual({v.upper() for v in values(call, '--cap-add')},
                          {'CHOWN', 'SETUID', 'SETGID'})
@@ -1285,6 +1348,7 @@ with open({str(host_calls)!r}, 'a') as log:
         chained.symlink_to(link.name)
         call = self.launch(script=str(chained))
         self.assertEqual(mounts(call).get('/home/coder'), self.repo / 'data')
+        self.assert_graphics_security(call)
 
     def test_symlinked_agent_state_refused_without_seeding_outside(self):
         for relative, profile in (('.omp', None), ('.omp/agent', None),

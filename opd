@@ -34,9 +34,10 @@ OMP_PROFILE, even when empty, takes precedence over OPD_PROFILE.
 Environment: OPD_IMAGE (opd:latest), OPD_DATA_DIR (repo/data; absolute),
 OPD_PROFILE (default), OMP_PROFILE (native selection),
 OPD_DISPLAY (override DISPLAY), OPD_NO_BANNER (suppress logo and launch details),
-OPD_GPU (off [default], software, nvidia, dri),
-OPD_BROWSER_SANDBOX (disabled [default], enabled [experimental opt-in]).
-Graphics and sandbox selections are exact, case-sensitive; empty is invalid.
+OPD_GPU (off [default], software, nvidia, dri).
+Graphics selections are exact, case-sensitive; empty is invalid.
+Chromium sandboxing and the bundled seccomp policy are required; runtime sandbox
+status is not verified by the wrapper.
 Software explicitly enables unsafe SwiftShader. Hardware modes require Linux:
 nvidia needs Docker CDI support and NVIDIA CDI devices; dri needs render devices.
 Hardware device access does not guarantee the browser's actual renderer.
@@ -242,14 +243,9 @@ check_mount_path() {
 
 prepare_graphics() {
     GPU_MODE="${OPD_GPU-off}"
-    BROWSER_SANDBOX="${OPD_BROWSER_SANDBOX-disabled}"
     case "$GPU_MODE" in
         off|software|nvidia|dri) ;;
         *) die 'OPD_GPU must be one of: off, software, nvidia, dri (empty is invalid)' ;;
-    esac
-    case "$BROWSER_SANDBOX" in
-        disabled|enabled) ;;
-        *) die 'OPD_BROWSER_SANDBOX must be one of: disabled, enabled (empty is invalid)' ;;
     esac
     GRAPHICS_ARGS=()
     case "$GPU_MODE" in
@@ -409,6 +405,8 @@ prepare_runtime() {
         command -v "$tool" >/dev/null 2>&1 || die "required host tool '$tool' is missing; install it and retry"
     done
     resolve_script_dir
+    [[ -f "$SCRIPT_DIR/browser-seccomp.json" && -r "$SCRIPT_DIR/browser-seccomp.json" ]] ||
+        die "required browser seccomp policy is missing, not a regular file, or unreadable: $SCRIPT_DIR/browser-seccomp.json"
     IMAGE_NAME="${OPD_IMAGE:-opd:latest}"
     command -v docker >/dev/null 2>&1 || die "Docker is not installed or not on PATH. Install/start Docker, then run $SCRIPT_DIR/build."
     docker info >/dev/null 2>&1 || die 'Docker daemon unavailable; start Docker/Docker Desktop and check context/socket permissions'
@@ -473,9 +471,8 @@ print_start_banner() {
     printf '  Repository config: %s -> /config/opd (read-only; not a settings overlay)\n' "$SCRIPT_DIR/config"
     printf '  Runtime sockets: container-local tmpfs (ephemeral)\n'
     printf '  Display: %s\n  X11 socket: %s\n  Xauthority: %s\n' "${HOST_DISPLAY:-disabled}" "$X11_STATUS" "$XAUTHORITY_STATUS"
-    printf '  Browser graphics: %s (renderer not verified)\n  Browser sandbox: %s' "$GPU_MODE" "$BROWSER_SANDBOX"
-    [[ "$BROWSER_SANDBOX" != enabled ]] || printf ' (experimental opt-in; host support not verified)'
-    printf '\n'
+    printf '  Browser graphics: %s (renderer not verified)\n' "$GPU_MODE"
+    printf '  Browser sandbox: required (runtime status not verified)\n'
     printf '  Network: host (host services accessible)\n\n'
 }
 
@@ -490,6 +487,7 @@ run_container() {
     [[ "$DEBUG_MODE" == true ]] || docker_args+=(--rm)
     docker_args+=(--init --entrypoint '' --name "$CONTAINER_NAME" --network host --shm-size=1g
         --user coder --security-opt no-new-privileges:true --cap-drop ALL
+        --security-opt "seccomp=$SCRIPT_DIR/browser-seccomp.json"
         --cap-add CHOWN --cap-add SETUID --cap-add SETGID
         --mount "type=bind,source=$DATA_DIR,target=/home/coder"
         --tmpfs /home/coder/.omp/run:rw,nosuid,nodev,mode=1777
@@ -499,7 +497,7 @@ run_container() {
         -e PATH=/home/coder/.local/bin:/home/coder/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
         -e "TERM=${TERM:-xterm-256color}" -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8
         -e "OMP_PROFILE=$SELECTED_PROFILE"
-        -e "OPD_GPU=$GPU_MODE" -e "OPD_BROWSER_SANDBOX=$BROWSER_SANDBOX")
+        -e "OPD_GPU=$GPU_MODE")
     if [[ "$SELECTED_PROFILE" != default ]]; then
         docker_args+=(--tmpfs "/home/coder/.omp/profiles/$SELECTED_PROFILE/run:rw,nosuid,nodev,mode=1777")
     fi

@@ -344,7 +344,6 @@ Useful wrapper variables:
 | `OMP_PROFILE` | Native profile default; defined empty selects default |
 | `OPD_DISPLAY` | Override display forwarding; empty disables it |
 | `OPD_GPU` | Browser graphics: `off` (default), `software`, `nvidia`, or `dri` |
-| `OPD_BROWSER_SANDBOX` | `disabled` (default: preserve caller policy), or experimental `enabled` |
 | `OPD_NO_BANNER` | Any nonempty value suppresses the logo and launch details |
 
 Provider variables are forwarded only when set and only by name:
@@ -460,38 +459,56 @@ Desktop, XQuartz forwards windows but does not expose the Mac GPU to Linux
 Chromium. Real Mac GPU rendering needs a separately configured host-side Chromium
 connection (for example CDP), which bypasses this container launcher policy.
 
-### Experimental Chromium sandbox
+### Required Chromium sandbox
 
-`OPD_BROWSER_SANDBOX=disabled` preserves caller sandbox arguments; it does not
-itself add `--no-sandbox`. Native omp
-[v18.14.1 adds `--no-sandbox` and `--disable-setuid-sandbox`](https://github.com/can1357/oh-my-pi/blob/v18.14.1/packages/coding-agent/src/tools/browser/launch.ts)
-by default. The installed version must be checked with `./opd -- --version`;
-the image's version is only the source-check baseline when runtime is unavailable.
+Sandboxing is mandatory for browsers started through the shared launcher, in all
+GPU modes and in both headed and headless operation. There is no sandbox toggle
+or unsandboxed retry. Native omp
+[v18.14.1 supplies `--no-sandbox` and `--disable-setuid-sandbox`](https://github.com/can1357/oh-my-pi/blob/v18.14.1/packages/coding-agent/src/tools/browser/launch.ts);
+the launcher always removes those exact arguments and rejects other known
+sandbox-disabling switches, including `--no-zygote-sandbox`. Literal positional
+arguments after Chromium's `--` separator remain unchanged.
 
-```bash
-OPD_BROWSER_SANDBOX=enabled opd
-```
+Every `opd` container launch uses the repository's `browser-seccomp.json`.
+Keep this readable regular file alongside the physical `opd` script; a missing
+or unreadable policy fails before persistent-home initialization or display
+forwarding. The Docker CLI reads the policy from the host, including on macOS
+Docker Desktop; it is not a bind mount or a native settings overlay. No policy
+is downloaded at launch.
 
-The enabled launcher policy removes those two exact disabling arguments and
-rejects other known sandbox-disabling switches. It does not change native
-settings, configure MCP, or retry unsandboxed after failure. Both variables
-require an exact listed value; defined empty values are invalid.
+The profile is derived from
+[Moby's default policy at commit `6fe7deb1b9fb7c0397a4593480d7d22b9ee8caef`](https://github.com/moby/profiles/blob/6fe7deb1b9fb7c0397a4593480d7d22b9ee8caef/seccomp/default.json).
+The only policy addition permits `clone`, `setns`, `unshare`, and `chroot`.
+Chromium needs the namespace operations and performs `chroot` inside its user
+namespace to restrict filesystem access. These syscall permissions do not grant
+container capabilities or bypass the kernel's capability checks. The existing
+non-root user, `no-new-privileges`, capability restrictions, and Docker's default
+AppArmor policy remain unchanged; no `SYS_ADMIN`, `SYS_CHROOT`, `--privileged`,
+or unconfined policy is added.
 
-Changing either selection requires a new `opd` launch and a newly started browser
-process. It does not reconfigure an already-running or externally attached browser.
+This is a deliberate extension of Docker's syscall policy for every process in
+the container, not a free security upgrade. The pinned modern baseline retains
+restrictions on `io_uring` and socket families such as `AF_ALG`, unlike the older
+Playwright diagnostic profile. The bundled policy carries its modification
+notice; its upstream Apache-2.0 license is in `browser-seccomp.LICENSE`.
 
-This is an experimental opt-in, not a claim that sandboxing works on every host.
-Chromium must be able to create its sandbox under the existing non-root Docker
-security restrictions. The current development environment rejects unprivileged
-user namespaces and sandboxed Chromium reports “No usable sandbox”. Do not work
-around this with `--privileged`, added broad capabilities, or globally disabled
-Docker security. Host policy must be assessed separately.
+The host still needs to permit the required sandbox operations. Chromium must
+fail if it cannot create its sandbox; do not work around failures by disabling
+host protections. A running browser or missing `--no-sandbox` flag alone does
+not prove active protections: check `chrome://sandbox` as described below.
 
-For standalone Playwright, use `chromiumSandbox: true` as well as the shared
-launcher; see [Playwright launch options](https://playwright.dev/docs/api/class-browsertype#browser-type-launch-option-chromium-sandbox).
-MCP remains user-managed and must use its supported sandbox configuration.
-The launcher only covers processes started through its executable: an attached
-CDP browser, browser relay, or alternate executable has its own policy.
+For standalone Playwright, use `chromiumSandbox: true` and the shared executable;
+see [Playwright launch options](https://playwright.dev/docs/api/class-browsertype#browser-type-launch-option-chromium-sandbox).
+MCP registration and configuration remain user-managed. This policy covers only
+processes launched through the shared executable: externally attached CDP
+browsers, relay browsers, and alternate executables have their own policies.
+An arbitrary workspace-capable tool caller can also run other executables; the
+launcher is not a security boundary against the tools themselves.
+
+Rebuild with `./build --base` followed by `./build`, then start a fresh `opd`
+session and browser process. For example, `OPD_GPU=nvidia opd` now requires
+sandboxing without any additional environment selection. GPU changes do not
+reconfigure already-running or externally attached browsers.
 
 ### Verify the running browser
 
@@ -524,9 +541,9 @@ software renderer. Use Chromium's CDP GPU diagnostics above rather than the
 renderer string exposed to webpage JavaScript: browser fingerprint masking can
 report a different GPU. Inspect the page visually as well.
 
-For sandbox opt-in, inspect `chrome://sandbox` for active namespace and seccomp
-protections; a page opening or absence of `--no-sandbox` alone is not proof.
-Verify separately on each host and each launch path, including user-configured MCP.
+Inspect `chrome://sandbox` for active namespace and seccomp protections; a page
+opening or absence of `--no-sandbox` alone is not proof. Verify separately on
+each host and each launch path, including user-configured MCP.
 
 The portable seed enables native browser automation with `browser.enabled: true`
 and selects headed operation with `browser.headless: false`. Existing profiles
@@ -545,12 +562,12 @@ remains user-managed and is separate from native browser settings.
 
 The container runs as `coder`, with `no-new-privileges`, dropped capabilities
 except `CHOWN`, `SETUID`, and `SETGID`, host networking, and no Docker socket.
-Native Chromium is unsandboxed by default; the experimental opt-in above has not
-been validated across supported Docker hosts. GPU access and software WebGL do
-not change that default. Software WebGL's unsafe SwiftShader opt-in is a separate
-risk, even when Chromium sandboxing is enabled.
+The shared Chromium launcher requires sandboxing, independently of GPU selection.
+Actual protections must be verified on the running browser. Software WebGL's
+unsafe SwiftShader opt-in remains a separate risk.
 
-This is not a sandbox. Tools can modify the mounted project and persistent home.
+The development container is not a security boundary around the tools: they can
+modify the mounted project and persistent home.
 Host networking and X11/XQuartz forwarding expose host services or desktop
 access. Disable display forwarding with:
 
@@ -571,22 +588,55 @@ python3 tests/browser-launcher
 
 These tests mock Docker. They validate wrapper behavior, not real image builds
 or native runtime behavior.
-The split build has not been validated with real amd64/arm64 image builds here;
-both architectures require actual builds and runtime smoke checks.
+The rebuilt Linux amd64 runtime was verified as described below. Arm64 image
+builds and runtime behavior still require Docker-enabled host verification.
 
-The repository launcher was exercised with the installed Chromium and real browser
-automation. Software mode rendered a WebGL test map's map with SwiftShader. Linux DRI and
-NVIDIA smoke checks reproduced headless graphics initialization failures; the
-corrected headless surfaceless-EGL policy rendered a WebGL test map using the AMD Radeon GPU
-(`radeonsi`) and, separately, the NVIDIA GeForce RTX 3070 with driver 595.71.05.
-Both hardware renderers and enabled WebGL were verified through Chromium's CDP
-GPU diagnostics. Menu hide/show worked and no page errors were observed. These
-checks launched the updated source launcher directly, not a newly rebuilt image.
+Before the mandatory-sandbox cutover, software mode rendered a WebGL test map with SwiftShader,
+and the headless hardware paths rendered it using AMD Radeon (`radeonsi`) and the
+NVIDIA GeForce RTX 3070 with driver 595.71.05. Chromium's CDP GPU diagnostics,
+visual map rendering, and menu interaction were checked without observed page
+errors. Those checks do not establish combined GPU/sandbox behavior after cutover.
 
-Sandbox opt-in previously failed closed with “No usable sandbox”; it was not
-retried without sandboxing. Runtime reports omp v18.14.1, matching the native
-launch-policy source checks. Headed hardware rendering, macOS runtime behavior,
-and new amd64/arm64 image builds remain unverified.
+The host-side isolated sandbox diagnostic succeeded with GPU off using
+Playwright v1.64.1's profile plus a `chroot` allowance. After rebuilding, the normal
+native browser launch also verified the exact bundled modern Moby policy together
+with NVIDIA rendering, without launcher overrides or a sandbox toggle.
+`chrome://sandbox` reported Namespace, PID/network namespaces, Seccomp-BPF, and
+TSYNC enabled, and “You are adequately sandboxed”; Yama ptrace protection was absent.
+CDP diagnostics identified the NVIDIA GeForce RTX 3070 with driver 595.71.05 and
+enabled WebGL. The test map rendered, menu hide/show worked, and no page errors were
+observed. Runtime reported omp v18.14.1, matching the native source checks.
+
+Combined sandbox/software or sandbox/DRI rendering, headed hardware operation,
+macOS runtime behavior, and arm64 image builds remain unverified.
+
+The bundled policy was compiled to BPF for amd64 and arm64 using libseccomp. Its
+native amd64 filter was loaded in a disposable process: file and Internet socket
+operations succeeded, while `AF_ALG` sockets and `io_uring_setup` were denied.
+This policy smoke check is not a Docker runtime check or an arm64 image build.
+The mandatory launcher was also exercised against the development container's
+unchanged outer policy: Chromium failed with “No usable sandbox” despite receiving
+upstream disabling flags, and produced no document output. The launcher did not
+fall back to an unsandboxed process.
+
+After rebuilding, inspect the bundled policy's sandbox result on a Docker host:
+
+```bash
+docker run --rm --init \
+  --user coder --cap-drop ALL \
+  --security-opt no-new-privileges=true \
+  --security-opt "seccomp=$PWD/browser-seccomp.json" \
+  --entrypoint /usr/local/bin/playwright-chromium \
+  opd:latest \
+  --headless \
+  --user-data-dir=/tmp/opd-sandbox-probe \
+  --allow-chrome-scheme-url \
+  --dump-dom chrome://sandbox
+```
+
+The Chrome scheme flag is needed for this direct headless CLI diagnostic. D-Bus
+warnings alone are not proof of sandbox failure. Inspect the returned Sandbox
+Status page rather than assuming startup success establishes sandboxing.
 
 Docker smoke checks on a Docker-enabled host:
 

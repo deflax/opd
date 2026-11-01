@@ -28,7 +28,7 @@ GRAPHICS_SWITCHES = (
 )
 SANDBOX_SWITCHES = (
     '--disable-namespace-sandbox', '--disable-seccomp-filter-sandbox',
-    '--disable-gpu-sandbox',
+    '--disable-gpu-sandbox', '--no-zygote-sandbox',
 )
 
 
@@ -98,19 +98,19 @@ class BrowserLauncherTests(unittest.TestCase):
             '', 'a b\tc\nd', '"quoted"', "'single'", '\\path\\name',
             '*?[abc]', '$HOME', '`id`', f'$(touch {marker})',
             '; false', 'https://example.test/?a=1&b=two words',
-            '--no-sandbox', '--disable-setuid-sandbox', '--', '-x', '',
+            '--', '-x', '',
         ]
         self.assert_launch(self.invoke(args), args)
         self.assertFalse(marker.exists())
 
-    def test_all_modes_and_sandbox_states(self):
+    def test_all_modes_enforce_sandbox(self):
         for mode in MODE_FLAGS:
-            for sandbox in ('disabled', 'enabled'):
-                with self.subTest(mode=mode, sandbox=sandbox):
-                    args = ['--headless=new', '--user-data-dir=two words', 'about:blank']
-                    result = self.invoke(args, OPD_GPU=mode,
-                                         OPD_BROWSER_SANDBOX=sandbox)
-                    self.assert_launch(result, args, mode)
+            with self.subTest(mode=mode):
+                retained = ['--headless=new', '--user-data-dir=two words', 'about:blank']
+                result = self.invoke(
+                    ['--no-sandbox', *retained, '--disable-setuid-sandbox'],
+                    OPD_GPU=mode)
+                self.assert_launch(result, retained, mode)
 
     def test_hardware_headless_platform_conflicts_and_argument_boundary(self):
         for mode in ('dri', 'nvidia'):
@@ -135,16 +135,7 @@ class BrowserLauncherTests(unittest.TestCase):
             self.assertEqual(json.loads(self.log.with_suffix('.env.json').read_text()),
                              {'EGL_PLATFORM': 'x11'})
 
-    def test_disabled_sandbox_preserves_caller_policy(self):
-        args = ['--no-sandbox', '--disable-setuid-sandbox',
-                '--no-sandbox=false', '--disable-setuid-sandbox=',
-                *SANDBOX_SWITCHES, '--disable-namespace-sandbox=false']
-        for sandbox in ({}, {'OPD_BROWSER_SANDBOX': 'disabled'}):
-            with self.subTest(sandbox=sandbox):
-                self.assert_launch(self.invoke(args, **sandbox), args)
-                self.assert_launch(self.invoke(**sandbox), [])
-
-    def test_enabled_sandbox_filters_only_exact_native_flags(self):
+    def test_filters_only_exact_native_sandbox_flags(self):
         original = ['--no-sandbox', '', '--headless=new',
                     '--disable-setuid-sandbox', '--no-sandbox',
                     ' --no-sandbox', '--no-sandbox-suffix',
@@ -154,21 +145,20 @@ class BrowserLauncherTests(unittest.TestCase):
                     if arg not in ('--no-sandbox', '--disable-setuid-sandbox')]
         for mode in MODE_FLAGS:
             with self.subTest(mode=mode):
-                result = self.invoke(original, OPD_GPU=mode,
-                                     OPD_BROWSER_SANDBOX='enabled')
+                result = self.invoke(original, OPD_GPU=mode)
                 self.assert_launch(result, retained, mode)
-        result = self.invoke(['--no-sandbox', '--disable-setuid-sandbox'],
-                             OPD_BROWSER_SANDBOX='enabled')
+        result = self.invoke(['--no-sandbox', '--disable-setuid-sandbox'])
         self.assert_launch(result, [])
 
     def test_switch_boundary_preserves_positional_arguments(self):
         positional = ['--', '--no-sandbox', '--disable-setuid-sandbox',
-                      '--disable-namespace-sandbox', '--disable-gpu',
-                      '--use-angle=swiftshader', '', 'two words']
+                      '--no-sandbox=false', '--disable-setuid-sandbox=',
+                      *SANDBOX_SWITCHES,
+                      *(flag + '=false' for flag in SANDBOX_SWITCHES),
+                      '--disable-gpu', '--use-angle=swiftshader', '', 'two words']
         for mode in MODE_FLAGS:
             with self.subTest(mode=mode):
-                result = self.invoke(['--no-sandbox', *positional], OPD_GPU=mode,
-                                     OPD_BROWSER_SANDBOX='enabled')
+                result = self.invoke(['--no-sandbox', *positional], OPD_GPU=mode)
                 self.assert_launch(result, positional, mode)
 
     def test_only_explicit_software_mode_opts_into_unsafe_swiftshader(self):
@@ -180,7 +170,7 @@ class BrowserLauncherTests(unittest.TestCase):
                     OPD_GPU=mode)
                 self.assert_launch(result, ['about:blank'], mode)
 
-    def test_enabled_sandbox_rejects_disabling_switches(self):
+    def test_rejects_sandbox_disabling_switches(self):
         forbidden = [*SANDBOX_SWITCHES]
         for flag in ('--no-sandbox', '--disable-setuid-sandbox', *SANDBOX_SWITCHES):
             forbidden.extend(flag + suffix for suffix in ('=', '=true', '=false', '=0'))
@@ -188,22 +178,16 @@ class BrowserLauncherTests(unittest.TestCase):
             for flag in forbidden:
                 with self.subTest(mode=mode, flag=flag):
                     result = self.invoke(['--no-sandbox', flag, 'private-session-value'],
-                                         OPD_GPU=mode, OPD_BROWSER_SANDBOX='enabled')
+                                         OPD_GPU=mode)
                     self.assert_rejected(result, 'sandbox-disabling')
                     self.assertNotIn('private-session-value', result.stderr)
 
-    def test_invalid_environment_never_launches_browser(self):
-        cases = {
-            'OPD_GPU': ('', 'auto', 'OFF', 'Software', 'software ', ' dri', 'nvidia\n'),
-            'OPD_BROWSER_SANDBOX': ('', 'auto', 'true', 'false', 'ENABLED',
-                                    'enabled ', ' disabled', 'enabled\n'),
-        }
-        for name, values in cases.items():
-            for value in values:
-                with self.subTest(name=name, value=value):
-                    result = self.invoke(['private-session-value'], **{name: value})
-                    self.assert_rejected(result, name)
-                    self.assertNotIn('private-session-value', result.stderr)
+    def test_invalid_gpu_environment_never_launches_browser(self):
+        for value in ('', 'auto', 'OFF', 'Software', 'software ', ' dri', 'nvidia\n'):
+            with self.subTest(value=value):
+                result = self.invoke(['private-session-value'], OPD_GPU=value)
+                self.assert_rejected(result, 'OPD_GPU')
+                self.assertNotIn('private-session-value', result.stderr)
 
     def test_explicit_modes_reject_graphics_overrides(self):
         for mode in ('software', 'nvidia', 'dri'):

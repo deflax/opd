@@ -2,19 +2,11 @@
 # Shared browser policy. Keep arguments literal: never eval or rebuild a command
 # string, and never log arguments (they can contain private browser/session data).
 gpu=${OPD_GPU-off}
-sandbox=${OPD_BROWSER_SANDBOX-disabled}
 
 case "$gpu" in
     off|software|nvidia|dri) ;;
     *)
         printf '%s\n' 'opd browser: OPD_GPU must be off, software, nvidia, or dri' >&2
-        exit 2
-        ;;
-esac
-case "$sandbox" in
-    disabled|enabled) ;;
-    *)
-        printf '%s\n' 'opd browser: OPD_BROWSER_SANDBOX must be disabled or enabled' >&2
         exit 2
         ;;
 esac
@@ -48,18 +40,17 @@ for arg do
         --ozone-platform|--ozone-platform=*|--ozone-platform-hint|--ozone-platform-hint=*)
             ozone_override=true ;;
     esac
-    if [ "$sandbox" = enabled ]; then
-        case "$arg" in
-            --no-sandbox|--disable-setuid-sandbox) continue ;;
-            --no-sandbox=*|--disable-setuid-sandbox=*|\
-            --disable-namespace-sandbox|--disable-namespace-sandbox=*|\
-            --disable-seccomp-filter-sandbox|--disable-seccomp-filter-sandbox=*|\
-            --disable-gpu-sandbox|--disable-gpu-sandbox=*)
-                printf '%s\n' 'opd browser: sandbox-disabling caller switch is forbidden when OPD_BROWSER_SANDBOX=enabled' >&2
-                exit 2
-                ;;
-        esac
-    fi
+    case "$arg" in
+        --no-sandbox|--disable-setuid-sandbox) continue ;;
+        --no-sandbox=*|--disable-setuid-sandbox=*|\
+        --disable-namespace-sandbox|--disable-namespace-sandbox=*|\
+        --disable-seccomp-filter-sandbox|--disable-seccomp-filter-sandbox=*|\
+        --disable-gpu-sandbox|--disable-gpu-sandbox=*|\
+        --no-zygote-sandbox|--no-zygote-sandbox=*)
+            printf '%s\n' 'opd browser: sandbox-disabling caller switch is forbidden' >&2
+            exit 2
+            ;;
+    esac
     # Playwright may add this automatically. Only explicit software mode may
     # opt in; it adds its own canonical switch below.
     case "$arg" in
