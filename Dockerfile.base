@@ -43,6 +43,9 @@ RUN set -eux; \
         libxcursor-dev \
         libfreetype6-dev \
         libfontconfig1-dev \
+        libegl1 \
+        libgl1-mesa-dri \
+        libglx-mesa0 \
         jq \
         yq \
         tree \

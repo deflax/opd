@@ -343,6 +343,8 @@ Useful wrapper variables:
 | `OPD_PROFILE` | Wrapper default profile |
 | `OMP_PROFILE` | Native profile default; defined empty selects default |
 | `OPD_DISPLAY` | Override display forwarding; empty disables it |
+| `OPD_GPU` | Browser graphics: `off` (default), `software`, `nvidia`, or `dri` |
+| `OPD_BROWSER_SANDBOX` | `disabled` (default: preserve caller policy), or experimental `enabled` |
 | `OPD_NO_BANNER` | Any nonempty value suppresses the logo and launch details |
 
 Provider variables are forwarded only when set and only by name:
@@ -373,12 +375,158 @@ Symlinks inside `.cache` are unlinked, not followed.
 ## Browser, MCP, and display
 
 Native browser automation uses the image browser via
-`PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/playwright-chromium`. The launcher
-suppresses Chrome for Testing's informational banner in headed windows and disables
-GPU acceleration to avoid observed container/X11 DRI3/nouveau hangs. This trades
-hardware acceleration for reliable rendering; it does not change the browser build
-or hide page-level permission prompts. Launcher changes require `./build --base`
-followed by `./build` to take effect in the image.
+`PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/playwright-chromium`. Playwright MCP's
+executable environment points to the same launcher. It suppresses the browser's
+informational banner in headed windows; it does not change browser branding or
+hide page-level permission prompts. Launcher and graphics-library changes require
+`./build --base` followed by `./build`.
+
+### Graphics selection
+
+Graphics selection is independent of display forwarding and headed/headless mode.
+The default remains `OPD_GPU=off`: Chromium receives `--disable-gpu`, no GPU
+devices are exposed, and the launcher does not opt into unsafe software WebGL.
+This avoids previously observed container/X11 DRI3/nouveau hangs, but
+WebGL-dependent sites may not render.
+
+| Mode | Host support and behavior |
+| --- | --- |
+| `off` | Default on Linux/macOS; existing GPU-disabled policy |
+| `software` | Explicit ANGLE/SwiftShader software WebGL; CPU rendering, no GPU devices |
+| `nvidia` | Linux only; explicit Docker CDI device `nvidia.com/gpu=all` |
+| `dri` | Linux only; existing `/dev/dri/renderD*` character devices and their numeric groups |
+
+```bash
+# Explicit opt-in: software WebGL, including --enable-unsafe-swiftshader.
+OPD_GPU=software opd
+
+# NVIDIA host: install/configure NVIDIA Container Toolkit for Docker first.
+OPD_GPU=nvidia opd
+
+# Linux Intel/AMD or another supported Mesa render device.
+OPD_GPU=dri opd
+```
+
+Software mode explicitly uses `--enable-unsafe-swiftshader`: it has reduced
+security guarantees and is not enabled by default. It is independent of
+Chromium's process sandbox. Hardware modes enable GPU use and disable Chromium's
+software rasterizer; they do not opt into SwiftShader or retry with software.
+Conflicting caller graphics switches are rejected in explicit graphics modes.
+The launcher strips caller `--enable-unsafe-swiftshader` switches (including those
+automatically supplied by Playwright) and adds its own only in `software` mode.
+The `off` mode preserves the GPU-disabled policy, not a guarantee that Chromium
+can never create a software WebGL context on its own.
+Device access and browser startup do **not** establish that the renderer is
+hardware-accelerated: verify the renderer below. Driver errors or unavailable
+WebGL must be fixed on the host, not treated as a successful hardware setup.
+
+NVIDIA mode requires host drivers, NVIDIA Container Toolkit, and a CDI-capable
+Docker daemon that can resolve `nvidia.com/gpu=all`. It requests that device
+directly instead of using `--gpus all` vendor discovery. It does not inject
+`NVIDIA_VISIBLE_DEVICES` or `NVIDIA_DRIVER_CAPABILITIES`: CDI supplies the device
+and driver mounts, without mixing in the legacy NVIDIA injection path. Host
+NVIDIA environment variables are not forwarded.
+
+Check the Docker host before using NVIDIA mode:
+
+```bash
+nvidia-ctk cdi list
+docker run --rm --device=nvidia.com/gpu=all ubuntu:24.04 nvidia-smi -L
+```
+
+The second command may download the Ubuntu image. Seeing the GPU confirms
+device access, not accelerated Chromium rendering. A host running Docker 29.9.2
+and NVIDIA Container Toolkit 1.20.1 successfully listed its RTX 3070 through this
+explicit CDI request while `--gpus all` vendor discovery failed.
+Missing or invalid CDI devices are reported by
+Docker; the wrapper does not configure the host or retry through a legacy path.
+See [Docker CDI devices](https://docs.docker.com/reference/cli/docker/container/run/#cdi-devices)
+and [NVIDIA CDI setup](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html).
+
+DRI requires at least one render device; its group IDs are added to the container
+user. The image includes Mesa GL/EGL libraries. Both hardware options expose GPU
+driver interfaces to container processes and do not provide additional isolation.
+
+For headless DRI and NVIDIA launches, the launcher selects ANGLE's OpenGL/EGL
+backend, `--ozone-platform=headless`, and `EGL_PLATFORM=surfaceless`. This avoids
+opening the forwarded X/xrdp display or selecting that display's software driver.
+Competing caller Ozone platform switches are rejected for these paths. Headed
+hardware launches and software/off modes keep their existing platform/environment
+policy.
+
+An xrdp display alone does not establish GPU availability: use `off` or explicitly
+opt into `software` unless a usable render device is available. On macOS Docker
+Desktop, XQuartz forwards windows but does not expose the Mac GPU to Linux
+Chromium. Real Mac GPU rendering needs a separately configured host-side Chromium
+connection (for example CDP), which bypasses this container launcher policy.
+
+### Experimental Chromium sandbox
+
+`OPD_BROWSER_SANDBOX=disabled` preserves caller sandbox arguments; it does not
+itself add `--no-sandbox`. Native omp
+[v18.14.1 adds `--no-sandbox` and `--disable-setuid-sandbox`](https://github.com/can1357/oh-my-pi/blob/v18.14.1/packages/coding-agent/src/tools/browser/launch.ts)
+by default. The installed version must be checked with `./opd -- --version`;
+the image's version is only the source-check baseline when runtime is unavailable.
+
+```bash
+OPD_BROWSER_SANDBOX=enabled opd
+```
+
+The enabled launcher policy removes those two exact disabling arguments and
+rejects other known sandbox-disabling switches. It does not change native
+settings, configure MCP, or retry unsandboxed after failure. Both variables
+require an exact listed value; defined empty values are invalid.
+
+Changing either selection requires a new `opd` launch and a newly started browser
+process. It does not reconfigure an already-running or externally attached browser.
+
+This is an experimental opt-in, not a claim that sandboxing works on every host.
+Chromium must be able to create its sandbox under the existing non-root Docker
+security restrictions. The current development environment rejects unprivileged
+user namespaces and sandboxed Chromium reports “No usable sandbox”. Do not work
+around this with `--privileged`, added broad capabilities, or globally disabled
+Docker security. Host policy must be assessed separately.
+
+For standalone Playwright, use `chromiumSandbox: true` as well as the shared
+launcher; see [Playwright launch options](https://playwright.dev/docs/api/class-browsertype#browser-type-launch-option-chromium-sandbox).
+MCP remains user-managed and must use its supported sandbox configuration.
+The launcher only covers processes started through its executable: an attached
+CDP browser, browser relay, or alternate executable has its own policy.
+
+### Verify the running browser
+
+With native browser automation enabled, run this in its JavaScript Eval tool:
+
+```js
+const tab = await browser.open({
+  name: "graphics-check", url: "https://example.com", headed: false,
+});
+console.log(await tab.run(async ({ browser }) => {
+  const session = await browser.target().createCDPSession();
+  try {
+    const info = await session.send("SystemInfo.getInfo");
+    return {
+      renderer: info.gpu.auxAttributes?.glRenderer,
+      implementation: info.gpu.auxAttributes?.glImplementationParts,
+      webgl: info.gpu.featureStatus.webgl,
+    };
+  } finally {
+    await session.detach();
+  }
+}));
+await tab.goto("chrome://sandbox");
+console.log(await tab.text());
+await browser.close({ name: "graphics-check" });
+```
+
+Hardware mode should identify the real GPU, not SwiftShader, llvmpipe, or another
+software renderer. Use Chromium's CDP GPU diagnostics above rather than the
+renderer string exposed to webpage JavaScript: browser fingerprint masking can
+report a different GPU. Inspect the page visually as well.
+
+For sandbox opt-in, inspect `chrome://sandbox` for active namespace and seccomp
+protections; a page opening or absence of `--no-sandbox` alone is not proof.
+Verify separately on each host and each launch path, including user-configured MCP.
 
 The portable seed enables native browser automation with `browser.enabled: true`
 and selects headed operation with `browser.headless: false`. Existing profiles
@@ -397,6 +545,10 @@ remains user-managed and is separate from native browser settings.
 
 The container runs as `coder`, with `no-new-privileges`, dropped capabilities
 except `CHOWN`, `SETUID`, and `SETGID`, host networking, and no Docker socket.
+Native Chromium is unsandboxed by default; the experimental opt-in above has not
+been validated across supported Docker hosts. GPU access and software WebGL do
+not change that default. Software WebGL's unsafe SwiftShader opt-in is a separate
+risk, even when Chromium sandboxing is enabled.
 
 This is not a sandbox. Tools can modify the mounted project and persistent home.
 Host networking and X11/XQuartz forwarding expose host services or desktop
@@ -412,13 +564,29 @@ Local checks:
 
 ```bash
 bash -n opd build clearcache
+sh -n playwright-chromium-launcher
 python3 tests/run
+python3 tests/browser-launcher
 ```
 
 These tests mock Docker. They validate wrapper behavior, not real image builds
 or native runtime behavior.
 The split build has not been validated with real amd64/arm64 image builds here;
 both architectures require actual builds and runtime smoke checks.
+
+The repository launcher was exercised with the installed Chromium and real browser
+automation. Software mode rendered a WebGL test map's map with SwiftShader. Linux DRI and
+NVIDIA smoke checks reproduced headless graphics initialization failures; the
+corrected headless surfaceless-EGL policy rendered a WebGL test map using the AMD Radeon GPU
+(`radeonsi`) and, separately, the NVIDIA GeForce RTX 3070 with driver 595.71.05.
+Both hardware renderers and enabled WebGL were verified through Chromium's CDP
+GPU diagnostics. Menu hide/show worked and no page errors were observed. These
+checks launched the updated source launcher directly, not a newly rebuilt image.
+
+Sandbox opt-in previously failed closed with “No usable sandbox”; it was not
+retried without sandboxing. Runtime reports omp v18.14.1, matching the native
+launch-policy source checks. Headed hardware rendering, macOS runtime behavior,
+and new amd64/arm64 image builds remain unverified.
 
 Docker smoke checks on a Docker-enabled host:
 

@@ -43,6 +43,9 @@ if args[:1] == ['run']:
     if 'MOCK_DOCKER_STDOUT' in os.environ:
         sys.stdout.write(os.environ['MOCK_DOCKER_STDOUT'])
         sys.stdout.flush()
+    if 'MOCK_DOCKER_STDERR' in os.environ:
+        sys.stderr.write(os.environ['MOCK_DOCKER_STDERR'])
+        sys.stderr.flush()
     if 'MOCK_DOCKER_WAIT' in os.environ:
         def received(number, frame):
             (root / 'signal').write_text(str(number))
@@ -290,6 +293,170 @@ with open({str(host_calls)!r}, 'a') as log:
         self.env['PATH'] = str(mocked_bin) + os.pathsep + self.env['PATH']
         return host_calls, socket
 
+    def graphics_devices(self):
+        """Redirect only the fixed render-node glob; keep real character checks."""
+        devices = self.case / 'dri'
+        devices.mkdir()
+        launcher = self.repo / 'opd'
+        text = launcher.read_text()
+        original = 'for device in /dev/dri/renderD*; do'
+        self.assertEqual(text.count(original), 1)
+        launcher.write_text(text.replace(original, f'for device in "{devices}"/renderD*; do'))
+        return devices
+
+    def assert_graphics_security(self, call):
+        self.assertEqual(values(call, '--security-opt'), ['no-new-privileges:true'])
+        self.assertEqual(values(call, '--cap-drop'), ['ALL'])
+        self.assertEqual(set(values(call, '--cap-add')), {'CHOWN', 'SETUID', 'SETGID'})
+        self.assertNotIn('--privileged', call)
+        self.assertNotIn('--runtime', call)
+        self.assertFalse(any(path == '/dev' or path.startswith('/dev/')
+                             for path in mounts(call)))
+        self.assertEqual(values(call, '--user'), ['coder'])
+
+    def test_invalid_graphics_selections_fail_before_state_and_display(self):
+        host_calls, _ = self.mock_display('Darwin')
+        for name, invalid in (
+                ('OPD_GPU', ('', 'OFF', 'Software', 'auto', ' off', 'off ', 'off\n',
+                             'software --privileged')),
+                ('OPD_BROWSER_SANDBOX', ('', 'true', 'false', 'Enabled', ' enabled',
+                                         'enabled ', 'disabled\n'))):
+            for value in invalid:
+                with self.subTest(name=name, value=value):
+                    result = self.invoke(env={name: value})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, b'')
+                    self.assertIn(name.encode(), result.stderr)
+                    self.assertFalse((self.repo / 'data').exists())
+                    self.assertFalse(host_calls.exists())
+                    self.assertEqual(self.calls(), [])
+
+    def test_hardware_modes_reject_non_linux_before_state_and_display(self):
+        host_calls, _ = self.mock_display('Darwin')
+        for mode in ('nvidia', 'dri'):
+            with self.subTest(mode=mode):
+                result = self.invoke(env={'OPD_GPU': mode})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b'requires a Linux host', result.stderr)
+                self.assertFalse((self.repo / 'data').exists())
+                self.assertFalse(host_calls.exists())
+                self.assertEqual(self.calls(), [])
+
+    def test_portable_modes_keep_device_isolation_and_sandbox_security(self):
+        self.mock_display('Darwin')
+        for mode in ('off', 'software'):
+            for sandbox in ('disabled', 'enabled'):
+                with self.subTest(mode=mode, sandbox=sandbox):
+                    self.reset_log()
+                    result = self.invoke(env={
+                        'OPD_GPU': mode, 'OPD_BROWSER_SANDBOX': sandbox,
+                        'NVIDIA_VISIBLE_DEVICES': 'all',
+                        'NVIDIA_DRIVER_CAPABILITIES': 'all',
+                        'OPD_DOCKER_ARGS': '--privileged --device /dev',
+                    })
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    call, _ = self.run_call()
+                    self.assert_graphics_security(call)
+                    self.assertEqual(values(call, '--device', '--gpus', '--group-add'), [])
+                    environment = values(call, '-e', '--env')
+                    self.assertIn('OPD_GPU=' + mode, environment)
+                    self.assertIn('OPD_BROWSER_SANDBOX=' + sandbox, environment)
+                    self.assertFalse(any(item.startswith(('NVIDIA_', 'OPD_DOCKER_ARGS'))
+                                         for item in environment))
+                    self.assertIn(('Browser graphics: ' + mode).encode(), result.stderr)
+                    self.assertIn(('Browser sandbox: ' + sandbox).encode(), result.stderr)
+                    if sandbox == 'enabled':
+                        self.assertIn(b'experimental opt-in', result.stderr)
+                    self.seeded_config()
+
+    def test_nvidia_requests_graphics_without_weakening_security(self):
+        self.mock_display('Linux')
+        result = self.invoke(env={
+            'OPD_GPU': 'nvidia', 'OPD_BROWSER_SANDBOX': 'enabled',
+            'NVIDIA_DRIVER_CAPABILITIES': 'all', 'NVIDIA_VISIBLE_DEVICES': 'none',
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        call, _ = self.run_call()
+        self.assert_graphics_security(call)
+        self.assertEqual(values(call, '--device'), ['nvidia.com/gpu=all'])
+        self.assertEqual(values(call, '--gpus', '--group-add'), [])
+        environment = values(call, '-e', '--env')
+        self.assertFalse(any(item.startswith('NVIDIA_') for item in environment))
+        self.assertIn('OPD_GPU=nvidia', environment)
+        self.assertIn('OPD_BROWSER_SANDBOX=enabled', environment)
+        self.assertIn(b'renderer not verified', result.stderr)
+        self.seeded_config()
+
+    def test_nvidia_toolkit_failure_surfaces_without_software_retry(self):
+        self.mock_display('Linux')
+        failure = 'unresolvable CDI devices nvidia.com/gpu=all\n'
+        result = self.invoke(env={'OPD_GPU': 'nvidia', 'MOCK_DOCKER_STATUS': '125',
+                                  'MOCK_DOCKER_STDERR': failure})
+        self.assertEqual(result.returncode, 125)
+        self.assertEqual(result.stdout, b'')
+        self.assertIn(failure.encode(), result.stderr)
+        call, _ = self.run_call()
+        self.assertEqual(values(call, '--device'), ['nvidia.com/gpu=all'])
+        self.assertEqual(values(call, '--gpus'), [])
+        self.assertIn('OPD_GPU=nvidia', values(call, '-e', '--env'))
+        self.assert_graphics_security(call)
+
+    def test_dri_requires_character_render_nodes_before_state_and_display(self):
+        host_calls, _ = self.mock_display('Linux')
+        devices = self.graphics_devices()
+        for layout in ('missing', 'empty', 'regular-file', 'directory'):
+            with self.subTest(layout=layout):
+                if layout == 'missing':
+                    devices.rmdir()
+                elif layout == 'empty':
+                    devices.mkdir()
+                elif layout == 'regular-file':
+                    (devices / 'renderD128').write_text('not a device')
+                else:
+                    (devices / 'renderD128').unlink()
+                    (devices / 'renderD128').mkdir()
+                result = self.invoke(env={'OPD_GPU': 'dri'})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b'character device', result.stderr)
+                self.assertFalse((self.repo / 'data').exists())
+                self.assertFalse(host_calls.exists())
+                self.assertEqual(self.calls(), [])
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux stat and device fixtures')
+    def test_dri_exposes_only_render_characters_and_deduplicates_numeric_groups(self):
+        self.mock_display('Linux')
+        devices = self.graphics_devices()
+        for name in ('renderD128', 'renderD129'):
+            (devices / name).symlink_to('/dev/null')
+        (devices / 'card0').symlink_to('/dev/null')
+        (devices / 'renderD130').write_text('not a device')
+        (devices / 'renderD131').mkdir()
+        (devices / 'renderD132').symlink_to(devices / 'missing')
+        call = self.launch(env={'OPD_GPU': 'dri'})
+        self.assert_graphics_security(call)
+        self.assertEqual(values(call, '--device'),
+                         [f'{devices / name}:{devices / name}:rw'
+                          for name in ('renderD128', 'renderD129')])
+        self.assertEqual(values(call, '--group-add'), [str(os.stat('/dev/null').st_gid)])
+        self.assertEqual(values(call, '--gpus'), [])
+        self.assertIn('OPD_GPU=dri', values(call, '-e', '--env'))
+        self.seeded_config()
+
+    def test_dri_group_lookup_fails_closed_before_state(self):
+        self.mock_display('Linux')
+        devices = self.graphics_devices()
+        (devices / 'renderD128').symlink_to('/dev/null')
+        stat = self.case / 'display-bin' / 'stat'
+        for body in ('exit 1', 'printf "not-a-gid\\n"'):
+            with self.subTest(body=body):
+                stat.write_text('#!/bin/sh\n' + body + '\n')
+                stat.chmod(0o755)
+                result = self.invoke(env={'OPD_GPU': 'dri'})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b'group', result.stderr)
+                self.assertFalse((self.repo / 'data').exists())
+                self.assertEqual(self.calls(), [])
+
     def test_darwin_default_display_rewriting_and_xquartz_access(self):
         host_calls, _ = self.mock_display('Darwin')
         for display in (None, '', ':0', ':1', '/tmp/launchd-test/org.xquartz:0',
@@ -422,6 +589,12 @@ with open({str(host_calls)!r}, 'a') as log:
         self.assertTrue(any(v in ('no-new-privileges', 'no-new-privileges:true',
                                   'no-new-privileges=true') for v in security))
         self.assertEqual([v.upper() for v in values(call, '--cap-drop')], ['ALL'])
+        self.assert_graphics_security(call)
+        self.assertEqual(values(call, '--device', '--gpus', '--group-add'), [])
+        environment = values(call, '-e', '--env')
+        self.assertIn('OPD_GPU=off', environment)
+        self.assertIn('OPD_BROWSER_SANDBOX=disabled', environment)
+        self.assertFalse(any(item.startswith('NVIDIA_') for item in environment))
         self.assertEqual({v.upper() for v in values(call, '--cap-add')},
                          {'CHOWN', 'SETUID', 'SETGID'})
         self.assertTrue('-i' in call or '--interactive' in call)

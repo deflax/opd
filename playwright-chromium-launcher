@@ -1,3 +1,114 @@
 #!/bin/sh
-# Shared launch policy: hide the testing banner and avoid container GPU/DRI hangs.
-exec /usr/local/lib/playwright-chromium --disable-infobars --disable-gpu "$@"
+# Shared browser policy. Keep arguments literal: never eval or rebuild a command
+# string, and never log arguments (they can contain private browser/session data).
+gpu=${OPD_GPU-off}
+sandbox=${OPD_BROWSER_SANDBOX-disabled}
+
+case "$gpu" in
+    off|software|nvidia|dri) ;;
+    *)
+        printf '%s\n' 'opd browser: OPD_GPU must be off, software, nvidia, or dri' >&2
+        exit 2
+        ;;
+esac
+case "$sandbox" in
+    disabled|enabled) ;;
+    *)
+        printf '%s\n' 'opd browser: OPD_BROWSER_SANDBOX must be disabled or enabled' >&2
+        exit 2
+        ;;
+esac
+case "$gpu" in
+    nvidia|dri)
+        if [ "$(uname -s)" != Linux ]; then
+            printf '%s\n' 'opd browser: hardware graphics modes require Linux' >&2
+            exit 2
+        fi
+        ;;
+esac
+
+# "for" snapshots the original arguments. Rotate each retained argument to the
+# end, preserving empty arguments, whitespace, metacharacters, and ordering.
+switches=true
+headless=false
+ozone_override=false
+for arg do
+    shift
+    if [ "$switches" = false ]; then
+        set -- "$@" "$arg"
+        continue
+    fi
+    if [ "$arg" = -- ]; then
+        switches=false
+        set -- "$@" "$arg"
+        continue
+    fi
+    case "$arg" in
+        --headless|--headless=*) headless=true ;;
+        --ozone-platform|--ozone-platform=*|--ozone-platform-hint|--ozone-platform-hint=*)
+            ozone_override=true ;;
+    esac
+    if [ "$sandbox" = enabled ]; then
+        case "$arg" in
+            --no-sandbox|--disable-setuid-sandbox) continue ;;
+            --no-sandbox=*|--disable-setuid-sandbox=*|\
+            --disable-namespace-sandbox|--disable-namespace-sandbox=*|\
+            --disable-seccomp-filter-sandbox|--disable-seccomp-filter-sandbox=*|\
+            --disable-gpu-sandbox|--disable-gpu-sandbox=*)
+                printf '%s\n' 'opd browser: sandbox-disabling caller switch is forbidden when OPD_BROWSER_SANDBOX=enabled' >&2
+                exit 2
+                ;;
+        esac
+    fi
+    # Playwright may add this automatically. Only explicit software mode may
+    # opt in; it adds its own canonical switch below.
+    case "$arg" in
+        --enable-unsafe-swiftshader|--enable-unsafe-swiftshader=*) continue ;;
+    esac
+    if [ "$gpu" != off ]; then
+        # Reject competing selection/disable switches, including split-value
+        # spellings. Duplicate-switch precedence is not a portable GL policy.
+        case "$arg" in
+            --disable-gpu|--disable-gpu=*|--enable-gpu|--enable-gpu=*|\
+            --use-gl|--use-gl=*|--use-angle|--use-angle=*|\
+            --disable-software-rasterizer|--disable-software-rasterizer=*|\
+            --disable-gpu-compositing|--disable-gpu-compositing=*|\
+            --disable-gpu-rasterization|--disable-gpu-rasterization=*|\
+            --disable-webgl|--disable-webgl=*|--disable-webgl2|--disable-webgl2=*|\
+            --use-vulkan|--use-vulkan=*|--enable-vulkan|--enable-vulkan=*|\
+            --disable-vulkan|--disable-vulkan=*|\
+            --override-use-software-gl-for-headless|--override-use-software-gl-for-headless=*)
+                printf '%s\n' 'opd browser: caller graphics overrides are forbidden in explicit OPD_GPU modes' >&2
+                exit 2
+                ;;
+        esac
+    fi
+    set -- "$@" "$arg"
+done
+
+# Headless hardware rendering must use EGL without opening an X display.
+# Headed browsers and software/off modes keep their existing platform policy.
+if { [ "$gpu" = dri ] || [ "$gpu" = nvidia ]; } && [ "$headless" = true ]; then
+    if [ "$ozone_override" = true ]; then
+        printf '%s\n' 'opd browser: caller Ozone overrides are forbidden in headless hardware mode' >&2
+        exit 2
+    fi
+    # Mesa otherwise may select the forwarded X/xrdp display's software driver.
+    EGL_PLATFORM=surfaceless
+    export EGL_PLATFORM
+    set -- --use-gl=angle --use-angle=gl-egl --ozone-platform=headless "$@"
+fi
+
+case "$gpu" in
+    off)
+        exec /usr/local/lib/playwright-chromium --disable-infobars --disable-gpu "$@"
+        ;;
+    software)
+        exec /usr/local/lib/playwright-chromium --disable-infobars \
+            --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader "$@"
+        ;;
+    nvidia|dri)
+        exec /usr/local/lib/playwright-chromium --disable-infobars \
+            --enable-gpu --disable-software-rasterizer "$@"
+        ;;
+esac

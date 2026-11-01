@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Behavioral checks of the shell launcher against a recording fake Chromium."""
+
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+SOURCE = Path(__file__).resolve().parents[1] / 'playwright-chromium-launcher'
+BROWSER = '/usr/local/lib/playwright-chromium'
+MODE_FLAGS = {
+    'off': ['--disable-gpu'],
+    'software': ['--use-gl=angle', '--use-angle=swiftshader',
+                 '--enable-unsafe-swiftshader'],
+    'nvidia': ['--enable-gpu', '--disable-software-rasterizer'],
+    'dri': ['--enable-gpu', '--disable-software-rasterizer'],
+}
+GRAPHICS_SWITCHES = (
+    '--disable-gpu', '--enable-gpu', '--use-gl', '--use-angle',
+    '--disable-software-rasterizer',
+    '--disable-gpu-compositing', '--disable-gpu-rasterization',
+    '--disable-webgl', '--disable-webgl2', '--use-vulkan', '--enable-vulkan',
+    '--disable-vulkan', '--override-use-software-gl-for-headless',
+)
+SANDBOX_SWITCHES = (
+    '--disable-namespace-sandbox', '--disable-seccomp-filter-sandbox',
+    '--disable-gpu-sandbox',
+)
+
+
+class BrowserLauncherTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='opd-browser-tests-')
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.log = self.root / 'browser.json'
+        self.fake = self.root / 'chromium'
+        self.fake.write_text(
+            '#!' + sys.executable + '\n'
+            'import json, os, pathlib, sys\n'
+            'pathlib.Path(os.environ["BROWSER_LOG"]).write_text('
+            'json.dumps(sys.argv[1:]))\n'
+            'pathlib.Path(os.environ["BROWSER_LOG"]).with_suffix(".env.json").write_text('
+            'json.dumps({"EGL_PLATFORM": os.environ.get("EGL_PLATFORM")}))\n'
+            'sys.stdout.write(os.environ.get("BROWSER_STDOUT", ""))\n'
+            'sys.stderr.write(os.environ.get("BROWSER_STDERR", ""))\n'
+            'sys.exit(int(os.environ.get("BROWSER_STATUS", "0")))\n'
+        )
+        self.fake.chmod(0o755)
+        self.launcher = self.root / 'launcher'
+        # Change only the fixed executable location, never the shell policy.
+        self.launcher.write_text(SOURCE.read_text().replace(BROWSER, str(self.fake)))
+        self.launcher.chmod(0o755)
+        self.bin = self.root / 'bin'
+        self.bin.mkdir()
+        uname = self.bin / 'uname'
+        uname.write_text('#!/bin/sh\nprintf "%s\\n" "${MOCK_PLATFORM-Linux}"\n')
+        uname.chmod(0o755)
+        self.env = {
+            'PATH': str(self.bin) + os.pathsep + os.defpath,
+            'HOME': str(self.root),
+            'LC_ALL': 'C',
+            'BROWSER_LOG': str(self.log),
+        }
+
+    def invoke(self, args=(), **environment):
+        self.log.unlink(missing_ok=True)
+        return subprocess.run(
+            [str(self.launcher), *args], env={**self.env, **environment},
+            cwd=self.root, text=True, capture_output=True, timeout=10,
+        )
+
+    def assert_launch(self, result, args, mode='off'):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertEqual(result.stderr, '')
+        backend = []
+        if mode in ('dri', 'nvidia') and any(
+                arg == '--headless' or arg.startswith('--headless=')
+                for arg in args[:args.index('--') if '--' in args else len(args)]):
+            backend = ['--use-gl=angle', '--use-angle=gl-egl', '--ozone-platform=headless']
+        self.assertEqual(json.loads(self.log.read_text()),
+                         ['--disable-infobars', *MODE_FLAGS[mode], *backend, *args])
+
+    def assert_rejected(self, result, diagnostic):
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+        self.assertIn(diagnostic, result.stderr)
+        self.assertFalse(self.log.exists(), 'Rejected arguments invoked Chromium')
+
+    def test_default_policy_and_literal_arguments(self):
+        marker = self.root / 'must-not-exist'
+        args = [
+            '', 'a b\tc\nd', '"quoted"', "'single'", '\\path\\name',
+            '*?[abc]', '$HOME', '`id`', f'$(touch {marker})',
+            '; false', 'https://example.test/?a=1&b=two words',
+            '--no-sandbox', '--disable-setuid-sandbox', '--', '-x', '',
+        ]
+        self.assert_launch(self.invoke(args), args)
+        self.assertFalse(marker.exists())
+
+    def test_all_modes_and_sandbox_states(self):
+        for mode in MODE_FLAGS:
+            for sandbox in ('disabled', 'enabled'):
+                with self.subTest(mode=mode, sandbox=sandbox):
+                    args = ['--headless=new', '--user-data-dir=two words', 'about:blank']
+                    result = self.invoke(args, OPD_GPU=mode,
+                                         OPD_BROWSER_SANDBOX=sandbox)
+                    self.assert_launch(result, args, mode)
+
+    def test_hardware_headless_platform_conflicts_and_argument_boundary(self):
+        for mode in ('dri', 'nvidia'):
+            with self.subTest(mode=mode):
+                for headless in ('--headless', '--headless=new'):
+                    self.assert_launch(self.invoke([headless], OPD_GPU=mode,
+                                                   EGL_PLATFORM='x11'), [headless], mode)
+                    self.assertEqual(json.loads(self.log.with_suffix('.env.json').read_text()),
+                                     {'EGL_PLATFORM': 'surfaceless'})
+                    for override in ('--ozone-platform=x11', '--ozone-platform',
+                                     '--ozone-platform-hint=auto', '--ozone-platform-hint'):
+                        self.assert_rejected(
+                            self.invoke([override, headless], OPD_GPU=mode), 'Ozone overrides')
+                headed = ['--ozone-platform=x11', '--', '--headless=new']
+                self.assert_launch(self.invoke(headed, OPD_GPU=mode, EGL_PLATFORM='x11'),
+                                   headed, mode)
+                self.assertEqual(json.loads(self.log.with_suffix('.env.json').read_text()),
+                                 {'EGL_PLATFORM': 'x11'})
+        for mode in ('off', 'software'):
+            args = ['--headless=new', '--ozone-platform=headless']
+            self.assert_launch(self.invoke(args, OPD_GPU=mode, EGL_PLATFORM='x11'), args, mode)
+            self.assertEqual(json.loads(self.log.with_suffix('.env.json').read_text()),
+                             {'EGL_PLATFORM': 'x11'})
+
+    def test_disabled_sandbox_preserves_caller_policy(self):
+        args = ['--no-sandbox', '--disable-setuid-sandbox',
+                '--no-sandbox=false', '--disable-setuid-sandbox=',
+                *SANDBOX_SWITCHES, '--disable-namespace-sandbox=false']
+        for sandbox in ({}, {'OPD_BROWSER_SANDBOX': 'disabled'}):
+            with self.subTest(sandbox=sandbox):
+                self.assert_launch(self.invoke(args, **sandbox), args)
+                self.assert_launch(self.invoke(**sandbox), [])
+
+    def test_enabled_sandbox_filters_only_exact_native_flags(self):
+        original = ['--no-sandbox', '', '--headless=new',
+                    '--disable-setuid-sandbox', '--no-sandbox',
+                    ' --no-sandbox', '--no-sandbox-suffix',
+                    '--user-data-dir=literal --no-sandbox',
+                    '--disable-setuid-sandbox', 'line\nbreak', '']
+        retained = [arg for arg in original
+                    if arg not in ('--no-sandbox', '--disable-setuid-sandbox')]
+        for mode in MODE_FLAGS:
+            with self.subTest(mode=mode):
+                result = self.invoke(original, OPD_GPU=mode,
+                                     OPD_BROWSER_SANDBOX='enabled')
+                self.assert_launch(result, retained, mode)
+        result = self.invoke(['--no-sandbox', '--disable-setuid-sandbox'],
+                             OPD_BROWSER_SANDBOX='enabled')
+        self.assert_launch(result, [])
+
+    def test_switch_boundary_preserves_positional_arguments(self):
+        positional = ['--', '--no-sandbox', '--disable-setuid-sandbox',
+                      '--disable-namespace-sandbox', '--disable-gpu',
+                      '--use-angle=swiftshader', '', 'two words']
+        for mode in MODE_FLAGS:
+            with self.subTest(mode=mode):
+                result = self.invoke(['--no-sandbox', *positional], OPD_GPU=mode,
+                                     OPD_BROWSER_SANDBOX='enabled')
+                self.assert_launch(result, positional, mode)
+
+    def test_only_explicit_software_mode_opts_into_unsafe_swiftshader(self):
+        for mode in MODE_FLAGS:
+            with self.subTest(mode=mode):
+                result = self.invoke(
+                    ['--enable-unsafe-swiftshader',
+                     '--enable-unsafe-swiftshader=false', 'about:blank'],
+                    OPD_GPU=mode)
+                self.assert_launch(result, ['about:blank'], mode)
+
+    def test_enabled_sandbox_rejects_disabling_switches(self):
+        forbidden = [*SANDBOX_SWITCHES]
+        for flag in ('--no-sandbox', '--disable-setuid-sandbox', *SANDBOX_SWITCHES):
+            forbidden.extend(flag + suffix for suffix in ('=', '=true', '=false', '=0'))
+        for mode in MODE_FLAGS:
+            for flag in forbidden:
+                with self.subTest(mode=mode, flag=flag):
+                    result = self.invoke(['--no-sandbox', flag, 'private-session-value'],
+                                         OPD_GPU=mode, OPD_BROWSER_SANDBOX='enabled')
+                    self.assert_rejected(result, 'sandbox-disabling')
+                    self.assertNotIn('private-session-value', result.stderr)
+
+    def test_invalid_environment_never_launches_browser(self):
+        cases = {
+            'OPD_GPU': ('', 'auto', 'OFF', 'Software', 'software ', ' dri', 'nvidia\n'),
+            'OPD_BROWSER_SANDBOX': ('', 'auto', 'true', 'false', 'ENABLED',
+                                    'enabled ', ' disabled', 'enabled\n'),
+        }
+        for name, values in cases.items():
+            for value in values:
+                with self.subTest(name=name, value=value):
+                    result = self.invoke(['private-session-value'], **{name: value})
+                    self.assert_rejected(result, name)
+                    self.assertNotIn('private-session-value', result.stderr)
+
+    def test_explicit_modes_reject_graphics_overrides(self):
+        for mode in ('software', 'nvidia', 'dri'):
+            for flag in GRAPHICS_SWITCHES:
+                for args in ([flag, 'value'], [flag + '=value'], [flag + '=']):
+                    with self.subTest(mode=mode, args=args):
+                        result = self.invoke([*args, 'private-session-value'], OPD_GPU=mode)
+                        self.assert_rejected(result, 'caller graphics overrides')
+                        self.assertNotIn('private-session-value', result.stderr)
+
+    def test_off_preserves_existing_caller_graphics_flags(self):
+        args = [*GRAPHICS_SWITCHES, '--use-gl=egl', '--use-angle=swiftshader',
+                '--disable-gpu=false', '--disable-software-rasterizer=false']
+        self.assert_launch(self.invoke(args), args)
+        self.assert_launch(self.invoke(args, OPD_GPU='off'), args)
+
+    def test_similar_argument_names_remain_literal(self):
+        args = ['--use-gl-suffix=egl', ' --disable-gpu',
+                '--custom=--use-angle=swiftshader', '--disable-gpu-watchdog',
+                '--disable-dev-shm-usage', '--remote-debugging-port=0', '--', '']
+        for mode in MODE_FLAGS:
+            with self.subTest(mode=mode):
+                self.assert_launch(self.invoke(args, OPD_GPU=mode), args, mode)
+
+    def test_hardware_requires_linux(self):
+        for platform in ('Darwin', 'FreeBSD', ''):
+            for mode in ('nvidia', 'dri'):
+                with self.subTest(platform=platform, mode=mode):
+                    result = self.invoke(OPD_GPU=mode, MOCK_PLATFORM=platform)
+                    self.assert_rejected(result, 'require Linux')
+        for mode in ('off', 'software'):
+            with self.subTest(mode=mode):
+                self.assert_launch(self.invoke(OPD_GPU=mode, MOCK_PLATFORM='Darwin'),
+                                   [], mode)
+
+    def test_browser_exit_status_and_output_are_forwarded(self):
+        for mode in MODE_FLAGS:
+            for status in (0, 7, 42, 127):
+                with self.subTest(mode=mode, status=status):
+                    result = self.invoke(['literal argument'], OPD_GPU=mode,
+                                         BROWSER_STATUS=str(status),
+                                         BROWSER_STDOUT='browser stdout\n',
+                                         BROWSER_STDERR='browser stderr\n')
+                    self.assertEqual(result.returncode, status)
+                    self.assertEqual(result.stdout, 'browser stdout\n')
+                    self.assertEqual(result.stderr, 'browser stderr\n')
+                    self.assertEqual(json.loads(self.log.read_text()),
+                                     ['--disable-infobars', *MODE_FLAGS[mode],
+                                      'literal argument'])
+
+
+if __name__ == '__main__':
+    unittest.main()
