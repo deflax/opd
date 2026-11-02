@@ -421,6 +421,7 @@ with open({str(host_calls)!r}, 'a') as log:
                 self.reset_log()
                 result = self.invoke(env={
                     'OPD_GPU': mode,
+                    'OPD_ACCEPT_GPU_RISK': '1',
                     'NVIDIA_VISIBLE_DEVICES': 'all',
                     'NVIDIA_DRIVER_CAPABILITIES': 'all',
                     'OPD_DOCKER_ARGS': '--privileged --device /dev',
@@ -496,7 +497,7 @@ with open({str(host_calls)!r}, 'a') as log:
         (devices / 'renderD130').write_text('not a device')
         (devices / 'renderD131').mkdir()
         (devices / 'renderD132').symlink_to(devices / 'missing')
-        call = self.launch(env={'OPD_GPU': 'dri'})
+        call = self.launch(env={'OPD_GPU': 'dri', 'OPD_ACCEPT_GPU_RISK': '1'})
         self.assert_graphics_security(call)
         self.assertEqual(values(call, '--device'),
                          [f'{devices / name}:{devices / name}:rw'
@@ -520,6 +521,105 @@ with open({str(host_calls)!r}, 'a') as log:
                 self.assertIn(b'group', result.stderr)
                 self.assertFalse((self.repo / 'data').exists())
                 self.assertEqual(self.calls(), [])
+
+    def test_gpu_risk_refusal_precedes_docker_state_and_display(self):
+        host_calls, _ = self.mock_display('Linux')
+        devices = self.graphics_devices()
+        (devices / 'renderD128').symlink_to('/dev/null')
+        for mode in ('software', 'dri'):
+            for acceptance in (None, '', '0', 'yes', 'true'):
+                with self.subTest(mode=mode, acceptance=acceptance):
+                    env = {'OPD_GPU': mode, 'OPD_NO_BANNER': '1'}
+                    if acceptance is not None:
+                        env['OPD_ACCEPT_GPU_RISK'] = acceptance
+                    result = self.invoke('private-native-argument', env=env)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, b'')
+                    self.assertIn(b'GPU risk not accepted', result.stderr)
+                    self.assertNotIn(b'private-native-argument', result.stderr)
+                    self.assertFalse((self.repo / 'data').exists())
+                    self.assertFalse(host_calls.exists())
+                    self.assertEqual(self.calls(), [])
+
+    def test_gpu_risk_acceptance_preserves_protocol_input_output_and_status(self):
+        self.mock_display('Linux')
+        devices = self.graphics_devices()
+        (devices / 'renderD128').symlink_to('/dev/null')
+        frame = b'{"id":1,"method":"probe"}\n'
+        response = b'{"id":1,"result":"ok"}\n'
+        for mode in ('software', 'dri'):
+            with self.subTest(mode=mode):
+                self.reset_log()
+                result = subprocess.run(
+                    [str(self.repo / 'opd'), '--mode=rpc'], cwd=self.cwd,
+                    env={**self.env, 'OPD_GPU': mode, 'OPD_ACCEPT_GPU_RISK': '1',
+                         'OPD_NO_BANNER': '1', 'MOCK_DOCKER_READ_STDIN': 'eof',
+                         'MOCK_DOCKER_STDOUT': response.decode(),
+                         'MOCK_DOCKER_STATUS': '37'},
+                    input=frame, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=10)
+                self.assertEqual(result.returncode, 37, result.stderr)
+                self.assertEqual(result.stdout, response)
+                self.assertEqual((self.log / 'stdin').read_bytes(), frame)
+                self.assertIn(b'WARNING:', result.stderr)
+                call, _ = self.run_call()
+                self.assertFalse(any(item.startswith('OPD_ACCEPT_GPU_RISK')
+                                     for item in values(call, '-e', '--env')))
+                self.reset_log()
+                refused = self.invoke(env={'OPD_GPU': mode})
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn(b'GPU risk not accepted', refused.stderr)
+                self.assertEqual(self.calls(), [], 'Acceptance must not persist across launches')
+
+    def test_gpu_risk_interactive_acceptance_leaves_native_input_intact(self):
+        self.mock_display('Linux')
+        devices = self.graphics_devices()
+        (devices / 'renderD128').symlink_to('/dev/null')
+        for mode in ('software', 'dri'):
+            with self.subTest(mode=mode):
+                self.reset_log()
+                result, before, after = self.invoke_tty(
+                    env={'OPD_GPU': mode, 'MOCK_DOCKER_READ_STDIN': 'line'},
+                    stdin_data=b'ACCEPT\nnative input\n', terminal_stderr=True)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertEqual((self.log / 'stdin').read_bytes(), b'native input\n')
+                self.assertEqual(before, after)
+                self.run_call()
+
+    def test_gpu_risk_interactive_rejection_and_eof_cancel_without_state(self):
+        host_calls, _ = self.mock_display('Linux')
+        devices = self.graphics_devices()
+        (devices / 'renderD128').symlink_to('/dev/null')
+        for mode in ('software', 'dri'):
+            for answer in (b'no\n', b'\n', b'accept\n', b'\x04'):
+                with self.subTest(mode=mode, answer=answer):
+                    result, before, after = self.invoke_tty(
+                        env={'OPD_GPU': mode}, stdin_data=answer, terminal_stderr=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(b'GPU risk not accepted', result.stdout)
+                    self.assertEqual(before, after)
+                    self.assertEqual(self.calls(), [])
+                    self.assertFalse((self.repo / 'data').exists())
+                    self.assertFalse(host_calls.exists())
+
+    def test_gpu_risk_machine_modes_never_prompt_even_on_terminal(self):
+        self.mock_display('Linux')
+        devices = self.graphics_devices()
+        (devices / 'renderD128').symlink_to('/dev/null')
+        for mode in ('software', 'dri'):
+            for args in (['--print', 'private-native-argument'],
+                         ['--mode=rpc'], ['--mode=json'], ['acp']):
+                with self.subTest(mode=mode, args=args):
+                    result, before, after = self.invoke_tty(
+                        *args, env={'OPD_GPU': mode}, stdin_data=b'ACCEPT\n',
+                        terminal_stderr=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(b'GPU risk not accepted', result.stdout)
+                    self.assertNotIn(b'Type ACCEPT', result.stdout)
+                    self.assertNotIn(b'private-native-argument', result.stdout)
+                    self.assertEqual(before, after)
+                    self.assertEqual(self.calls(), [])
+                    self.assertFalse((self.repo / 'data').exists())
 
     def test_darwin_default_display_rewriting_and_xquartz_access(self):
         host_calls, _ = self.mock_display('Darwin')

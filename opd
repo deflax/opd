@@ -34,10 +34,13 @@ OMP_PROFILE, even when empty, takes precedence over OPD_PROFILE.
 Environment: OPD_IMAGE (opd:latest), OPD_DATA_DIR (repo/data; absolute),
 OPD_PROFILE (default), OMP_PROFILE (native selection),
 OPD_DISPLAY (override DISPLAY), OPD_NO_BANNER (suppress logo and launch details),
-OPD_GPU (off [default], software, nvidia, dri).
+OPD_GPU (off [default], software, nvidia, dri),
+OPD_ACCEPT_GPU_RISK=1 (explicit acceptance for dri/software launches).
 Graphics selections are exact, case-sensitive; empty is invalid.
-Chromium sandboxing and the bundled seccomp policy are required; runtime sandbox
-status is not verified by the wrapper.
+DRI/software require typing ACCEPT on an interactive terminal or the acceptance
+environment variable. Noninteractive and print/protocol launches never prompt.
+Acceptance is per launch, not saved, and does not disable sandbox protections.
+Sandbox-disabling switches are rejected; runtime status is not verified.
 Software explicitly enables unsafe SwiftShader. Hardware modes require Linux:
 nvidia needs Docker CDI support and NVIDIA CDI devices; dri needs render devices.
 Hardware device access does not guarantee the browser's actual renderer.
@@ -273,6 +276,25 @@ prepare_graphics() {
         fi
     done
     [[ "$device_count" -gt 0 ]] || die 'OPD_GPU=dri requires at least one /dev/dri/renderD* character device; no software fallback'
+}
+
+accept_gpu_risk() {
+    case "$GPU_MODE" in
+        dri|software) ;;
+        *) return 0 ;;
+    esac
+    printf 'WARNING: OPD_GPU=%s has been observed to run Chromium GPU processes without GPU-process sandboxing.\n' "$GPU_MODE" >&2
+    printf 'Renderer and container protections do not replace the missing GPU-process sandbox.\n' >&2
+    if [[ "$GPU_MODE" == software ]]; then
+        printf 'Software mode also explicitly enables unsafe SwiftShader.\n' >&2
+    fi
+    [[ "${OPD_ACCEPT_GPU_RISK-}" != 1 ]] || return 0
+    [[ -t 0 && -t 1 && -t 2 && "$MACHINE_MODE" == false ]] ||
+        die 'GPU risk not accepted; set OPD_ACCEPT_GPU_RISK=1 explicitly or use OPD_GPU=off'
+    printf 'Type ACCEPT to accept this risk for this launch; anything else cancels: ' >&2
+    local answer
+    IFS= read -r answer || die 'GPU risk not accepted; launch cancelled'
+    [[ "$answer" == ACCEPT ]] || die 'GPU risk not accepted; launch cancelled'
 }
 
 prepare_data() {
@@ -540,6 +562,7 @@ main() {
     [[ $# -ne 0 ]] || REPRINT_BANNER=true
     parse_args "$@"
     prepare_graphics
+    accept_gpu_risk
     prepare_runtime
     prepare_workspace
     prepare_data

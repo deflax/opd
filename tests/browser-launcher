@@ -13,9 +13,9 @@ import unittest
 SOURCE = Path(__file__).resolve().parents[1] / 'playwright-chromium-launcher'
 BROWSER = '/usr/local/lib/playwright-chromium'
 MODE_FLAGS = {
-    'off': ['--disable-gpu'],
+    'off': ['--disable-gpu', '--disable-software-rasterizer'],
     'software': ['--use-gl=angle', '--use-angle=swiftshader',
-                 '--enable-unsafe-swiftshader'],
+                 '--enable-unsafe-swiftshader', '--disable-software-rasterizer'],
     'nvidia': ['--enable-gpu', '--disable-software-rasterizer'],
     'dri': ['--enable-gpu', '--disable-software-rasterizer'],
 }
@@ -189,8 +189,8 @@ class BrowserLauncherTests(unittest.TestCase):
                 self.assert_rejected(result, 'OPD_GPU')
                 self.assertNotIn('private-session-value', result.stderr)
 
-    def test_explicit_modes_reject_graphics_overrides(self):
-        for mode in ('software', 'nvidia', 'dri'):
+    def test_all_modes_reject_graphics_overrides(self):
+        for mode in MODE_FLAGS:
             for flag in GRAPHICS_SWITCHES:
                 for args in ([flag, 'value'], [flag + '=value'], [flag + '=']):
                     with self.subTest(mode=mode, args=args):
@@ -198,11 +198,6 @@ class BrowserLauncherTests(unittest.TestCase):
                         self.assert_rejected(result, 'caller graphics overrides')
                         self.assertNotIn('private-session-value', result.stderr)
 
-    def test_off_preserves_existing_caller_graphics_flags(self):
-        args = [*GRAPHICS_SWITCHES, '--use-gl=egl', '--use-angle=swiftshader',
-                '--disable-gpu=false', '--disable-software-rasterizer=false']
-        self.assert_launch(self.invoke(args), args)
-        self.assert_launch(self.invoke(args, OPD_GPU='off'), args)
 
     def test_similar_argument_names_remain_literal(self):
         args = ['--use-gl-suffix=egl', ' --disable-gpu',

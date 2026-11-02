@@ -56,24 +56,22 @@ for arg do
     case "$arg" in
         --enable-unsafe-swiftshader|--enable-unsafe-swiftshader=*) continue ;;
     esac
-    if [ "$gpu" != off ]; then
-        # Reject competing selection/disable switches, including split-value
-        # spellings. Duplicate-switch precedence is not a portable GL policy.
-        case "$arg" in
-            --disable-gpu|--disable-gpu=*|--enable-gpu|--enable-gpu=*|\
-            --use-gl|--use-gl=*|--use-angle|--use-angle=*|\
-            --disable-software-rasterizer|--disable-software-rasterizer=*|\
-            --disable-gpu-compositing|--disable-gpu-compositing=*|\
-            --disable-gpu-rasterization|--disable-gpu-rasterization=*|\
-            --disable-webgl|--disable-webgl=*|--disable-webgl2|--disable-webgl2=*|\
-            --use-vulkan|--use-vulkan=*|--enable-vulkan|--enable-vulkan=*|\
-            --disable-vulkan|--disable-vulkan=*|\
-            --override-use-software-gl-for-headless|--override-use-software-gl-for-headless=*)
-                printf '%s\n' 'opd browser: caller graphics overrides are forbidden in explicit OPD_GPU modes' >&2
-                exit 2
-                ;;
-        esac
-    fi
+    # Graphics selection belongs to OPD_GPU in every mode, including off.
+    # Reject split and joined overrides rather than rely on switch precedence.
+    case "$arg" in
+        --disable-gpu|--disable-gpu=*|--enable-gpu|--enable-gpu=*|\
+        --use-gl|--use-gl=*|--use-angle|--use-angle=*|\
+        --disable-software-rasterizer|--disable-software-rasterizer=*|\
+        --disable-gpu-compositing|--disable-gpu-compositing=*|\
+        --disable-gpu-rasterization|--disable-gpu-rasterization=*|\
+        --disable-webgl|--disable-webgl=*|--disable-webgl2|--disable-webgl2=*|\
+        --use-vulkan|--use-vulkan=*|--enable-vulkan|--enable-vulkan=*|\
+        --disable-vulkan|--disable-vulkan=*|\
+        --override-use-software-gl-for-headless|--override-use-software-gl-for-headless=*)
+            printf '%s\n' 'opd browser: caller graphics overrides are forbidden; select OPD_GPU instead' >&2
+            exit 2
+            ;;
+    esac
     set -- "$@" "$arg"
 done
 
@@ -92,11 +90,13 @@ fi
 
 case "$gpu" in
     off)
-        exec /usr/local/lib/playwright-chromium --disable-infobars --disable-gpu "$@"
+        exec /usr/local/lib/playwright-chromium --disable-infobars \
+            --disable-gpu --disable-software-rasterizer "$@"
         ;;
     software)
         exec /usr/local/lib/playwright-chromium --disable-infobars \
-            --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader "$@"
+            --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader \
+            --disable-software-rasterizer "$@"
         ;;
     nvidia|dri)
         exec /usr/local/lib/playwright-chromium --disable-infobars \

@@ -344,6 +344,7 @@ Useful wrapper variables:
 | `OMP_PROFILE` | Native profile default; defined empty selects default |
 | `OPD_DISPLAY` | Override display forwarding; empty disables it |
 | `OPD_GPU` | Browser graphics: `off` (default), `software`, `nvidia`, or `dri` |
+| `OPD_ACCEPT_GPU_RISK` | Exact value `1` accepts the known DRI/software GPU-process sandbox risk for this launch |
 | `OPD_NO_BANNER` | Any nonempty value suppresses the logo and launch details |
 
 Provider variables are forwarded only when set and only by name:
@@ -383,14 +384,14 @@ hide page-level permission prompts. Launcher and graphics-library changes requir
 ### Graphics selection
 
 Graphics selection is independent of display forwarding and headed/headless mode.
-The default remains `OPD_GPU=off`: Chromium receives `--disable-gpu`, no GPU
-devices are exposed, and the launcher does not opt into unsafe software WebGL.
-This avoids previously observed container/X11 DRI3/nouveau hangs, but
-WebGL-dependent sites may not render.
+The default remains `OPD_GPU=off`: Chromium receives `--disable-gpu` and
+`--disable-software-rasterizer`, no GPU devices are exposed, and WebGL is unavailable
+instead of automatically falling back to SwiftShader. This avoids previously
+observed container/X11 DRI3/nouveau hangs.
 
 | Mode | Host support and behavior |
 | --- | --- |
-| `off` | Default on Linux/macOS; existing GPU-disabled policy |
+| `off` | Default on Linux/macOS; GPU disabled, no automatic SwiftShader fallback |
 | `software` | Explicit ANGLE/SwiftShader software WebGL; CPU rendering, no GPU devices |
 | `nvidia` | Linux only; explicit Docker CDI device `nvidia.com/gpu=all` |
 | `dri` | Linux only; existing `/dev/dri/renderD*` character devices and their numeric groups |
@@ -406,15 +407,36 @@ OPD_GPU=nvidia opd
 OPD_GPU=dri opd
 ```
 
+`dri` and `software` require explicit risk acceptance on every host-wrapper launch,
+including launches of native subcommands. Chromium has been observed to skip
+GPU-process sandboxing in these modes. Software mode also enables unsafe
+SwiftShader. The wrapper warns on stderr even when `OPD_NO_BANNER` is set.
+
+On an interactive terminal, type the exact word `ACCEPT` to continue. Any other
+answer or EOF cancels before Docker calls, home seeding, or display setup.
+Print/RPC/ACP launches and launches without terminal stdin, stdout, and stderr
+never prompt or consume native input. For an intentional noninteractive launch,
+accept explicitly in that command's environment:
+
+```bash
+OPD_ACCEPT_GPU_RISK=1 OPD_GPU=dri OPD_DISPLAY='' opd
+```
+
+Acceptance is not saved in a profile or forwarded into the container and does
+not disable or repair any sandbox protection. `off` and `nvidia` do not require
+this acknowledgement; that is not a runtime security certification. This is a
+conservative mode-based host-launch gate, not a browser sandbox probe, and it
+does not reconfigure already-running containers or externally attached browsers.
+
 Software mode explicitly uses `--enable-unsafe-swiftshader`: it has reduced
 security guarantees and is not enabled by default. It is independent of
-Chromium's process sandbox. Hardware modes enable GPU use and disable Chromium's
-software rasterizer; they do not opt into SwiftShader or retry with software.
-Conflicting caller graphics switches are rejected in explicit graphics modes.
+Chromium's process sandbox. Automatic SwiftShader fallback is disabled in every
+mode with `--disable-software-rasterizer`; `software` explicitly selects SwiftShader
+rather than falling back to it. Hardware modes enable GPU use without retrying
+with software. Conflicting caller graphics switches are rejected in every mode,
+including `off`; select graphics through `OPD_GPU` instead.
 The launcher strips caller `--enable-unsafe-swiftshader` switches (including those
 automatically supplied by Playwright) and adds its own only in `software` mode.
-The `off` mode preserves the GPU-disabled policy, not a guarantee that Chromium
-can never create a software WebGL context on its own.
 Device access and browser startup do **not** establish that the renderer is
 hardware-accelerated: verify the renderer below. Driver errors or unavailable
 WebGL must be fixed on the host, not treated as a successful hardware setup.
@@ -525,6 +547,8 @@ console.log(await tab.run(async ({ browser }) => {
     return {
       renderer: info.gpu.auxAttributes?.glRenderer,
       implementation: info.gpu.auxAttributes?.glImplementationParts,
+      gpuSandboxed: info.gpu.auxAttributes?.sandboxed,
+      gpuProcessCrashes: info.gpu.auxAttributes?.processCrashCount,
       webgl: info.gpu.featureStatus.webgl,
     };
   } finally {
@@ -542,8 +566,9 @@ renderer string exposed to webpage JavaScript: browser fingerprint masking can
 report a different GPU. Inspect the page visually as well.
 
 Inspect `chrome://sandbox` for active namespace and seccomp protections; a page
-opening or absence of `--no-sandbox` alone is not proof. Verify separately on
-each host and each launch path, including user-configured MCP.
+opening or absence of `--no-sandbox` alone is not proof. Check `gpuSandboxed`
+separately: the sandbox page does not establish GPU-process sandboxing. Verify
+each host and launch path, including user-configured MCP.
 
 The portable seed enables native browser automation with `browser.enabled: true`
 and selects headed operation with `browser.headless: false`. Existing profiles
@@ -562,7 +587,8 @@ remains user-managed and is separate from native browser settings.
 
 The container runs as `coder`, with `no-new-privileges`, dropped capabilities
 except `CHOWN`, `SETUID`, and `SETGID`, host networking, and no Docker socket.
-The shared Chromium launcher requires sandboxing, independently of GPU selection.
+The shared Chromium launcher removes or rejects sandbox-disabling switches,
+independently of GPU selection, but Chromium can still skip GPU-process sandboxing.
 Actual protections must be verified on the running browser. Software WebGL's
 unsafe SwiftShader opt-in remains a separate risk.
 
@@ -591,11 +617,14 @@ or native runtime behavior.
 The rebuilt Linux amd64 runtime was verified as described below. Arm64 image
 builds and runtime behavior still require Docker-enabled host verification.
 
-Before the mandatory-sandbox cutover, software mode rendered a WebGL test map with SwiftShader,
-and the headless hardware paths rendered it using AMD Radeon (`radeonsi`) and the
-NVIDIA GeForce RTX 3070 with driver 595.71.05. Chromium's CDP GPU diagnostics,
-visual map rendering, and menu interaction were checked without observed page
-errors. Those checks do not establish combined GPU/sandbox behavior after cutover.
+Earlier native Linux amd64 checks rendered a WebGL test map using AMD Radeon (`radeonsi`) and
+NVIDIA GeForce RTX 3070 with driver 595.71.05. NVIDIA passed both headless and
+headed operation, with desktop visibility confirmed and GPU-process sandboxing
+reported enabled. AMD DRI and SwiftShader rendered successfully but reported
+GPU-process sandboxing disabled; isolated startup diagnostics logged
+`InitializeSandbox() called with multiple threads in process gpu-process.`
+Starting the AMD sandbox early activated it but blocked EGL loading, so that
+experimental flag is not part of the launcher.
 
 The host-side isolated sandbox diagnostic succeeded with GPU off using
 Playwright v1.64.1's profile plus a `chroot` allowance. After rebuilding, the normal
@@ -607,8 +636,23 @@ CDP diagnostics identified the NVIDIA GeForce RTX 3070 with driver 595.71.05 and
 enabled WebGL. The test map rendered, menu hide/show worked, and no page errors were
 observed. Runtime reported omp v18.14.1, matching the native source checks.
 
-Combined sandbox/software or sandbox/DRI rendering, headed hardware operation,
-macOS runtime behavior, and arm64 image builds remain unverified.
+The updated source launcher was smoke-tested against installed Chromium
+157.0.8103.15 on Linux amd64 with fresh temporary profiles and browser-level CDP.
+GPU-off exposed neither WebGL nor WebGL2, reported no SwiftShader renderer, and
+The test site displayed its WebGL-unavailable message. Explicit software mode still used
+SwiftShader; NVIDIA still used the RTX 3070 with GPU-process sandboxing enabled.
+Both rendering modes passed map zoom from 4.0 to 5.0 with zero reported GPU crashes.
+With EGL vendor discovery deliberately unavailable in isolated test processes,
+both hardware modes exposed no WebGL/WebGL2 and selected no SwiftShader renderer.
+After rebuilding, the installed launcher matched the updated source. Native
+headless DRI rendering was retested on AMD Radeon (`radeonsi`): WebGL was enabled,
+The test map rendered, zoom changed from 4.0 to 5.0, menu hide/show passed, and no
+page errors or GPU-process crashes were observed. Browser launch diagnostics
+confirmed `--disable-software-rasterizer` with no unsafe SwiftShader opt-in.
+GPU-process sandboxing still reported disabled; the namespace and seccomp checks
+passed separately. Removing automatic fallback does not fix that AMD limitation.
+macOS must be retested with the updated image; arm64 image-build coverage remains
+unverified.
 
 The bundled policy was compiled to BPF for amd64 and arm64 using libseccomp. Its
 native amd64 filter was loaded in a disposable process: file and Internet socket
