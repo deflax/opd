@@ -30,11 +30,11 @@ The repository contains configuration templates, not provider credentials.
 ./build                       # Build omp; reuse the existing toolchain image
 ./build --no-cache            # Reinstall omp without rebuilding the toolchain
 ./build --base && ./build     # Rebuild tools/browser, then omp
-./build --build-arg OMP_VERSION=18.14.1  # Example explicit version override
+./build --build-arg OMP_VERSION=18.15.0  # Example explicit version override
 ```
 
-The default omp version is in `Dockerfile`. `./build` creates the base image if
-missing; otherwise it reuses it. Changes to `Dockerfile.base` or
+The default omp version is [18.15.0](https://github.com/can1357/oh-my-pi/releases/tag/v18.15.0),
+pinned in `Dockerfile`. `./build` creates the base image if missing; otherwise it reuses it. Changes to `Dockerfile.base` or
 `playwright-chromium-launcher` require rebuilding both images.
 Linux uses the host UID/GID by default; macOS uses `1000:1000`.
 Existing persistent data must be writable by the image user.
