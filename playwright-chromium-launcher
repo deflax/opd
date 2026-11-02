@@ -88,18 +88,16 @@ if { [ "$gpu" = dri ] || [ "$gpu" = nvidia ]; } && [ "$headless" = true ]; then
     set -- --use-gl=angle --use-angle=gl-egl --ozone-platform=headless "$@"
 fi
 
+set -- --disable-software-rasterizer "$@"
 case "$gpu" in
     off)
-        exec /usr/local/lib/playwright-chromium --disable-infobars \
-            --disable-gpu --disable-software-rasterizer "$@"
+        set -- --disable-gpu "$@"
         ;;
     software)
-        exec /usr/local/lib/playwright-chromium --disable-infobars \
-            --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader \
-            --disable-software-rasterizer "$@"
+        set -- --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader "$@"
         ;;
     nvidia|dri)
-        exec /usr/local/lib/playwright-chromium --disable-infobars \
-            --enable-gpu --disable-software-rasterizer "$@"
+        set -- --enable-gpu "$@"
         ;;
 esac
+exec /usr/local/lib/playwright-chromium --disable-infobars "$@"

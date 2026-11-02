@@ -180,6 +180,7 @@ desktop access. Tools can modify mounted projects and home contents.
 
 - Preview cache cleanup with `./clearcache --dry-run`; run `./clearcache` to apply it.
   Only `.cache` contents are deleted; auth, settings, sessions, and user assets remain.
+  Cleanup targets `.cache` directly; it does not search for other cache directories.
 - Missing tools/browser changes: rebuild with `./build --base && ./build`.
 - SSH or no display: set `OPD_DISPLAY=''` and open browsers with `headed:false`.
 - Missing icons: select a patched Nerd Font in the host terminal, or choose
@@ -194,4 +195,6 @@ python3 tests/browser-launcher
 ```
 
 Hermetic tests mock Docker; they do not replace actual image builds or runtime checks.
+The browser launcher selects mode-specific flags, then uses one shared Chromium
+execution path so common flags and exit/output forwarding stay consistent across modes.
 Verify each host, architecture, graphics mode, and display path you intend to use.

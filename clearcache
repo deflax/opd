@@ -40,22 +40,18 @@ DATA_DIR="$(CDPATH= cd -P -- "$DATA_DIR" && pwd)"
 [[ "$DATA_DIR" != / ]] || die 'refusing to clean /'
 shopt -s nullglob dotglob
 REMOVED=0
-for RELATIVE in .cache; do
-    CACHE="$DATA_DIR/$RELATIVE"
-    # Check every traversed component before listing anything. Never follow links.
-    [[ ! -L "$CACHE" ]] || die 'refusing symlinked .cache; no files removed'
-    [[ -d "$CACHE" ]] || continue
-    for TARGET in "$CACHE"/*; do
-        [[ ! -L "$DATA_DIR" && ! -L "$CACHE" && -d "$CACHE" ]] || die 'cache parent changed; stopping cleanup'
-        [[ "$TARGET" == "$CACHE/"* && "${TARGET%/*}" == "$CACHE" ]] || die 'unsafe cleanup target; stopping cleanup'
-        if [[ "$DRY_RUN" == true ]]; then
-            printf '[dry-run] remove %q\n' "$TARGET"
-        else
-            # rm unlinks nested symlinks; it does not traverse their destinations.
-            rm -rf -- "$TARGET"
-            printf 'removed %q\n' "$TARGET"
-        fi
-        REMOVED=$((REMOVED + 1))
-    done
+CACHE="$DATA_DIR/.cache"
+[[ ! -L "$CACHE" ]] || die 'refusing symlinked .cache; no files removed'
+for TARGET in "$CACHE"/*; do
+    [[ ! -L "$DATA_DIR" && ! -L "$CACHE" && -d "$CACHE" ]] || die 'cache parent changed; stopping cleanup'
+    [[ "$TARGET" == "$CACHE/"* && "${TARGET%/*}" == "$CACHE" ]] || die 'unsafe cleanup target; stopping cleanup'
+    if [[ "$DRY_RUN" == true ]]; then
+        printf '[dry-run] remove %q\n' "$TARGET"
+    else
+        # rm unlinks nested symlinks; it does not traverse their destinations.
+        rm -rf -- "$TARGET"
+        printf 'removed %q\n' "$TARGET"
+    fi
+    REMOVED=$((REMOVED + 1))
 done
 printf '%s disposable cache item(s) %s. All .omp state preserved.\n' "$REMOVED" "$([[ "$DRY_RUN" == true ]] && printf 'would be removed' || printf 'removed')"
