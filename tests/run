@@ -298,15 +298,23 @@ with open({str(host_calls)!r}, 'a') as log:
         return host_calls, socket
 
     def graphics_devices(self):
-        """Redirect only the fixed render-node glob; keep real character checks."""
+        """Redirect device and PCI metadata paths without touching real host devices."""
         devices = self.case / 'dri'
         devices.mkdir()
         launcher = self.repo / 'opd'
         text = launcher.read_text()
-        original = 'for device in /dev/dri/renderD*; do'
-        self.assertEqual(text.count(original), 1)
-        launcher.write_text(text.replace(original, f'for device in "{devices}"/renderD*; do'))
+        self.assertIn('/dev/dri/', text, 'Device fixture must isolate host render nodes')
+        text = text.replace('/dev/dri/', str(devices) + '/')
+        text = text.replace('/sys/class/drm/', str(self.case / 'sysfs') + '/')
+        launcher.write_text(text)
         return devices
+
+    def graphics_pci_device(self, name, address):
+        target = self.case / 'pci' / address
+        target.mkdir(parents=True, exist_ok=True)
+        node = self.case / 'sysfs' / name
+        node.mkdir(parents=True)
+        (node / 'device').symlink_to(target, target_is_directory=True)
 
     def assert_graphics_security(self, call):
         self.assertEqual(values(call, '--security-opt'), [
@@ -497,7 +505,8 @@ with open({str(host_calls)!r}, 'a') as log:
         (devices / 'renderD130').write_text('not a device')
         (devices / 'renderD131').mkdir()
         (devices / 'renderD132').symlink_to(devices / 'missing')
-        call = self.launch(env={'OPD_GPU': 'dri', 'OPD_ACCEPT_GPU_RISK': '1'})
+        call = self.launch(env={'OPD_GPU': 'dri', 'OPD_ACCEPT_GPU_RISK': '1',
+                                'DRI_PRIME': 'untrusted-host-selection'})
         self.assert_graphics_security(call)
         self.assertEqual(values(call, '--device'),
                          [f'{devices / name}:{devices / name}:rw'
@@ -505,6 +514,7 @@ with open({str(host_calls)!r}, 'a') as log:
         self.assertEqual(values(call, '--group-add'), [str(os.stat('/dev/null').st_gid)])
         self.assertEqual(values(call, '--gpus'), [])
         self.assertIn('OPD_GPU=dri', values(call, '-e', '--env'))
+        self.assertFalse(any(item.startswith('DRI_PRIME') for item in values(call, '-e', '--env')))
         self.seeded_config()
 
     def test_dri_group_lookup_fails_closed_before_state(self):
@@ -521,6 +531,116 @@ with open({str(host_calls)!r}, 'a') as log:
                 self.assertIn(b'group', result.stderr)
                 self.assertFalse((self.repo / 'data').exists())
                 self.assertEqual(self.calls(), [])
+
+    def test_dri_selector_mounts_only_selected_node_and_routes_its_pci_gpu(self):
+        self.mock_display('Linux')
+        devices = self.graphics_devices()
+        addresses = {'renderD128': '0000:12:00.0', 'renderD129': '0001:02:0a.3'}
+        for name, address in addresses.items():
+            (devices / name).symlink_to('/dev/null')
+            self.graphics_pci_device(name, address)
+        for name, address in addresses.items():
+            with self.subTest(name=name):
+                self.reset_log()
+                selected = devices / name
+                call = self.launch(env={
+                    'OPD_GPU': 'dri', 'OPD_DRI_DEVICE': str(selected),
+                    'OPD_ACCEPT_GPU_RISK': '1', 'DRI_PRIME': 'wrong-host-selection'})
+                self.assertEqual(values(call, '--device'), [f'{selected}:{selected}:rw'])
+                self.assertEqual(values(call, '--group-add'), [str(os.stat(selected).st_gid)])
+                environment = values(call, '-e', '--env')
+                self.assertIn('DRI_PRIME=pci-' + address.replace(':', '_').replace('.', '_'),
+                              environment)
+                self.assertFalse(any(item.startswith('OPD_DRI_DEVICE') for item in environment))
+                self.assert_graphics_security(call)
+
+    def test_dri_selector_rejects_other_modes_before_docker_state_and_display(self):
+        host_calls, _ = self.mock_display('Linux')
+        for mode in ('off', 'software', 'nvidia'):
+            for selection in ('', '/dev/dri/renderD128'):
+                with self.subTest(mode=mode, selection=selection):
+                    result = self.invoke(env={'OPD_GPU': mode, 'OPD_DRI_DEVICE': selection})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(b'OPD_DRI_DEVICE requires OPD_GPU=dri', result.stderr)
+                    self.assertEqual(result.stdout, b'')
+                    self.assertEqual(self.calls(), [])
+                    self.assertFalse((self.repo / 'data').exists())
+                    self.assertFalse(host_calls.exists())
+
+    def test_dri_selector_rejects_invalid_paths_before_docker_state_and_display(self):
+        host_calls, _ = self.mock_display('Linux')
+        devices = self.graphics_devices()
+        selections = ('', 'renderD128', '/dev/null', str(devices / 'card0'),
+                      str(devices / 'renderD'), str(devices / 'renderD128/other'),
+                      str(devices / 'renderD128;private-value'),
+                      str(devices / 'renderD128\n'))
+        for selection in selections:
+            with self.subTest(selection=selection):
+                result = self.invoke(env={'OPD_GPU': 'dri', 'OPD_DRI_DEVICE': selection})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b'OPD_DRI_DEVICE must name', result.stderr)
+                self.assertNotIn(b'private-value', result.stderr)
+                self.assertEqual(result.stdout, b'')
+                self.assertEqual(self.calls(), [])
+                self.assertFalse((self.repo / 'data').exists())
+                self.assertFalse(host_calls.exists())
+
+    def test_dri_selector_never_falls_back_to_another_available_node(self):
+        host_calls, _ = self.mock_display('Linux')
+        devices = self.graphics_devices()
+        (devices / 'renderD128').symlink_to('/dev/null')
+        selected = devices / 'renderD129'
+        for kind in ('missing', 'regular-file', 'directory', 'broken-link'):
+            with self.subTest(kind=kind):
+                if kind == 'regular-file':
+                    selected.write_text('not a device')
+                elif kind == 'directory':
+                    selected.mkdir()
+                elif kind == 'broken-link':
+                    selected.symlink_to(devices / 'missing')
+                result = self.invoke(env={
+                    'OPD_GPU': 'dri', 'OPD_DRI_DEVICE': str(selected),
+                    'OPD_ACCEPT_GPU_RISK': '1'})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b'existing character render device', result.stderr)
+                self.assertEqual(self.calls(), [])
+                self.assertFalse((self.repo / 'data').exists())
+                self.assertFalse(host_calls.exists())
+                if selected.is_dir():
+                    selected.rmdir()
+                elif selected.exists() or selected.is_symlink():
+                    selected.unlink()
+
+    def test_dri_selector_requires_a_resolvable_pci_mapping(self):
+        host_calls, _ = self.mock_display('Linux')
+        devices = self.graphics_devices()
+        selected = devices / 'renderD128'
+        selected.symlink_to('/dev/null')
+        env = {'OPD_GPU': 'dri', 'OPD_DRI_DEVICE': str(selected),
+               'OPD_ACCEPT_GPU_RISK': '1'}
+        result = self.invoke(env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'PCI device mapping', result.stderr)
+        self.graphics_pci_device('renderD128', 'not-a-pci-device')
+        result = self.invoke(env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'resolve to a PCI GPU', result.stderr)
+        self.assertEqual(self.calls(), [])
+        self.assertFalse((self.repo / 'data').exists())
+        self.assertFalse(host_calls.exists())
+
+    def test_dri_selector_still_requires_gpu_risk_acceptance(self):
+        host_calls, _ = self.mock_display('Linux')
+        devices = self.graphics_devices()
+        selected = devices / 'renderD128'
+        selected.symlink_to('/dev/null')
+        self.graphics_pci_device('renderD128', '0000:12:00.0')
+        result = self.invoke(env={'OPD_GPU': 'dri', 'OPD_DRI_DEVICE': str(selected)})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'GPU risk not accepted', result.stderr)
+        self.assertEqual(self.calls(), [])
+        self.assertFalse((self.repo / 'data').exists())
+        self.assertFalse(host_calls.exists())
 
     def test_gpu_risk_refusal_precedes_docker_state_and_display(self):
         host_calls, _ = self.mock_display('Linux')

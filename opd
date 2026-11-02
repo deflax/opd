@@ -35,6 +35,7 @@ Environment: OPD_IMAGE (opd:latest), OPD_DATA_DIR (repo/data; absolute),
 OPD_PROFILE (default), OMP_PROFILE (native selection),
 OPD_DISPLAY (override DISPLAY), OPD_NO_BANNER (suppress logo and launch details),
 OPD_GPU (off [default], software, nvidia, dri),
+OPD_DRI_DEVICE (optional /dev/dri/renderD<number>; requires OPD_GPU=dri),
 OPD_ACCEPT_GPU_RISK=1 (explicit acceptance for dri/software launches).
 Graphics selections are exact, case-sensitive; empty is invalid.
 DRI/software require typing ACCEPT on an interactive terminal or the acceptance
@@ -43,6 +44,8 @@ Acceptance is per launch, not saved, and does not disable sandbox protections.
 Sandbox-disabling switches are rejected; runtime status is not verified.
 Software explicitly enables unsafe SwiftShader. Hardware modes require Linux:
 nvidia needs Docker CDI support and NVIDIA CDI devices; dri needs render devices.
+When OPD_DRI_DEVICE is set, only that render node is exposed and Mesa receives its
+PCI-based DRI_PRIME selection. Unset exposes all render nodes as before.
 Hardware device access does not guarantee the browser's actual renderer.
 EOF
 }
@@ -251,6 +254,13 @@ prepare_graphics() {
         *) die 'OPD_GPU must be one of: off, software, nvidia, dri (empty is invalid)' ;;
     esac
     GRAPHICS_ARGS=()
+    DRI_DEVICE=''
+    if [[ ${OPD_DRI_DEVICE+x} ]]; then
+        [[ "$GPU_MODE" == dri ]] || die 'OPD_DRI_DEVICE requires OPD_GPU=dri'
+        [[ "$OPD_DRI_DEVICE" =~ ^/dev/dri/renderD[0-9]+$ ]] ||
+            die 'OPD_DRI_DEVICE must name /dev/dri/renderD<number> (empty is invalid)'
+        DRI_DEVICE="$OPD_DRI_DEVICE"
+    fi
     case "$GPU_MODE" in
         off|software) return 0 ;;
     esac
@@ -263,8 +273,20 @@ prepare_graphics() {
         return 0
     fi
     command -v stat >/dev/null 2>&1 || die "OPD_GPU=dri requires the host 'stat' tool"
-    local device gid group_ids=' ' device_count=0
+    local device gid group_ids=' ' device_count=0 sysfs_device pci_path pci_address
+    if [[ -n "$DRI_DEVICE" ]]; then
+        [[ -c "$DRI_DEVICE" ]] || die 'OPD_DRI_DEVICE must be an existing character render device; no fallback'
+        command -v readlink >/dev/null 2>&1 || die "OPD_DRI_DEVICE requires the host 'readlink' tool"
+        sysfs_device="/sys/class/drm/${DRI_DEVICE##*/}/device"
+        [[ -d "$sysfs_device" ]] || die 'OPD_DRI_DEVICE has no readable PCI device mapping in /sys/class/drm'
+        pci_path="$(readlink -f -- "$sysfs_device")" || die 'cannot resolve OPD_DRI_DEVICE PCI device mapping'
+        pci_address="${pci_path##*/}"
+        [[ "$pci_address" =~ ^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$ ]] ||
+            die 'OPD_DRI_DEVICE must resolve to a PCI GPU'
+        GRAPHICS_ARGS+=(-e "DRI_PRIME=pci-${pci_address//[:.]/_}")
+    fi
     for device in /dev/dri/renderD*; do
+        [[ -z "$DRI_DEVICE" || "$device" == "$DRI_DEVICE" ]] || continue
         [[ -c "$device" ]] || continue
         gid="$(stat -Lc '%g' -- "$device")" || die "cannot determine render device group: $device"
         [[ "$gid" =~ ^[0-9]+$ ]] || die "invalid numeric group for render device: $device"
@@ -494,6 +516,7 @@ print_start_banner() {
     printf '  Runtime sockets: container-local tmpfs (ephemeral)\n'
     printf '  Display: %s\n  X11 socket: %s\n  Xauthority: %s\n' "${HOST_DISPLAY:-disabled}" "$X11_STATUS" "$XAUTHORITY_STATUS"
     printf '  Browser graphics: %s (renderer not verified)\n' "$GPU_MODE"
+    [[ -z "$DRI_DEVICE" ]] || printf '  Requested DRI render device: %s (renderer not verified)\n' "$DRI_DEVICE"
     printf '  Browser sandbox: required (runtime status not verified)\n'
     printf '  Network: host (host services accessible)\n\n'
 }

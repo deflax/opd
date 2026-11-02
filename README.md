@@ -33,13 +33,10 @@ The repository contains configuration templates, not provider credentials.
 ./build --build-arg OMP_VERSION=18.15.0  # Example explicit version override
 ```
 
-The default omp version is [18.15.0](https://github.com/can1357/oh-my-pi/releases/tag/v18.15.0),
-pinned in `Dockerfile`. `./build` creates the base image if missing; otherwise it reuses it. Changes to `Dockerfile.base` or
-`playwright-chromium-launcher` require rebuilding both images.
-CodeMap resolves the [latest stable release](https://github.com/JordanCoin/codemap/releases/latest)
-when its install layer runs and verifies the download against the release checksums.
-To refresh it and other floating toolchain dependencies despite Docker's build cache,
-run `./build --base --no-cache && ./build`.
+The default omp version is [18.15.0](https://github.com/can1357/oh-my-pi/releases/tag/v18.15.0), pinned in `Dockerfile`.
+`./build` creates the base image if missing; otherwise it reuses it. Rebuild both images after `Dockerfile.base` or `playwright-chromium-launcher` changes.
+CodeMap resolves the [latest stable release](https://github.com/JordanCoin/codemap/releases/latest) when its install layer runs and verifies release checksums.
+Refresh floating toolchain dependencies despite Docker's build cache with `./build --base --no-cache && ./build`.
 Linux uses the host UID/GID by default; macOS uses `1000:1000`.
 Existing persistent data must be writable by the image user.
 
@@ -106,6 +103,7 @@ CodeMap is available as a CLI, not an automatically invoked native tool.
 | `OMP_PROFILE` / `OPD_PROFILE` | Native/wrapper profile defaults; native takes precedence |
 | `OPD_DISPLAY` | Override display forwarding; empty disables it |
 | `OPD_GPU` | Graphics mode; default `off` |
+| `OPD_DRI_DEVICE` | Optional PCI render node, e.g. `/dev/dri/renderD128`; `dri` only |
 | `OPD_ACCEPT_GPU_RISK=1` | Explicitly accept known DRI/software risks for this launch |
 | `OPD_NO_BANNER=1` | Hide the banner, not security warnings |
 
@@ -126,6 +124,10 @@ Host credential files and host omp/XDG configuration paths are not mounted autom
 through `OPD_GPU`; conflicting browser graphics overrides are rejected.
 Hardware device access alone does not prove accelerated rendering.
 
+`OPD_DRI_DEVICE=/dev/dri/renderD128` exposes only that PCI render node and sets Mesa's
+PCI-based `DRI_PRIME` selection. Unset exposes all render nodes; empty/invalid devices
+or use outside `dri` fail. This selects a device, not a driver or sandbox fix.
+
 `dri` and `software` have run with unsandboxed GPU processes in our tests.
 Every launch in these modes requires typing **`ACCEPT`** on an interactive terminal.
 Noninteractive/print/RPC/ACP launches require `OPD_ACCEPT_GPU_RISK=1` instead.
@@ -134,7 +136,7 @@ This is a conservative mode-based warning, not automatic sandbox detection.
 
 ```bash
 OPD_GPU=nvidia OPD_DISPLAY='' opd
-OPD_ACCEPT_GPU_RISK=1 OPD_GPU=dri OPD_DISPLAY='' opd
+OPD_ACCEPT_GPU_RISK=1 OPD_GPU=dri OPD_DRI_DEVICE=/dev/dri/renderD128 opd
 ```
 
 GPU mode does not select visibility. Native `browser.headless` or per-call `headed`
@@ -195,6 +197,4 @@ python3 tests/browser-launcher
 ```
 
 Hermetic tests mock Docker; they do not replace actual image builds or runtime checks.
-The browser launcher selects mode-specific flags, then uses one shared Chromium
-execution path so common flags and exit/output forwarding stay consistent across modes.
 Verify each host, architecture, graphics mode, and display path you intend to use.
