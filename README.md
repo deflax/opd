@@ -36,6 +36,10 @@ The repository contains configuration templates, not provider credentials.
 The default omp version is [18.15.0](https://github.com/can1357/oh-my-pi/releases/tag/v18.15.0),
 pinned in `Dockerfile`. `./build` creates the base image if missing; otherwise it reuses it. Changes to `Dockerfile.base` or
 `playwright-chromium-launcher` require rebuilding both images.
+CodeMap resolves the [latest stable release](https://github.com/JordanCoin/codemap/releases/latest)
+when its install layer runs and verifies the download against the release checksums.
+To refresh it and other floating toolchain dependencies despite Docker's build cache,
+run `./build --base --no-cache && ./build`.
 Linux uses the host UID/GID by default; macOS uses `1000:1000`.
 Existing persistent data must be writable by the image user.
 
