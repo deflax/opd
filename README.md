@@ -80,6 +80,7 @@ Runtime sockets use ephemeral container-local tmpfs, not persistent storage.
 A matching `config/profiles/<name>.yml` replaces that seed without merging.
 Existing profiles are never reseeded; edits to repository templates affect new profiles only.
 Optional models and personality templates are also first-launch seeds.
+The default seed disables omp self-updates (`update.auto: false`); manage omp versions by rebuilding the image.
 
 After initialization, use native `/settings`, `config set`, or the profile's saved
 `config.yml`. Those changes persist across container restarts.

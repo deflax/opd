@@ -150,3 +150,5 @@ cycleOrder:
   - slow
   - default
   - smol
+update:
+  auto: false
