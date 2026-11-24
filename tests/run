@@ -949,6 +949,8 @@ with open({str(host_calls)!r}, 'a') as log:
     def test_protocol_modes_suppress_tty_on_actual_terminal(self):
         scenarios = [[], ['acp'], ['--profile', 'work', 'acp'],
                      ['--model', 'model-name', 'acp'], ['--approval-mode=yolo', 'acp'],
+                     ['--plan', '--no-ui', 'acp'],
+                     ['--plan', '--unknown', 'anonymize', '--mode=rpc'],
                      ['--print', 'prompt'], ['-p', 'prompt'],
                      ['--mode', 'rpc'], ['--mode=rpc'],
                      ['--mode', 'json'], ['--mode=json'],
@@ -1374,8 +1376,6 @@ with open({str(host_calls)!r}, 'a') as log:
             ['bash', '--mode', 'rpc'],
             ['sh', '--print'],
             ['zsh', '--mode=rpc'],
-            # Resolver treats --plan as required-value, unlike bootstrap.
-            ['--plan', '--unknown', 'anonymize', '--mode=rpc'],
             ['--no-ui', 'grep', '--mode=rpc'],
             ['--print', 'grep', '--profile', 'work'],
             ['--', '--print', '--mode=rpc', 'acp'],
