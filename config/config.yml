@@ -1,15 +1,15 @@
 modelRoles:
-  slow: openai-codex/gpt-6-astra:high
-  smol: openai-codex/gpt-6.1-sol:low
-  default: openai-codex/gpt-6.1-sol:medium
+  slow: openai-codex/gpt-6.2-astra:high
+  smol: openai-codex/gpt-6.2-sol:low
+  default: openai-codex/gpt-6.2-sol:medium
   tiny: openai-codex/gpt-6-luna:low
-  vision: openai-codex/gpt-6.1-sol:medium
-  plan: openai-codex/gpt-6-astra:medium
+  vision: openai-codex/gpt-6.2-sol:medium
+  plan: openai-codex/gpt-6.2-astra:medium
   commit: openai-codex/gpt-6-luna:medium
-  task: openai-codex/gpt-6-astra:medium
+  task: openai-codex/gpt-6.2-astra:medium
   judge: typesafe/jev-latest
   memory: openai-codex/gpt-6-luna:low
-  advisor: openai-codex/gpt-6-astra:medium
+  advisor: openai-codex/gpt-6.2-astra:medium
   image: openai-codex/gpt-image-2
 symbolPreset: nerd
 composer:
@@ -80,9 +80,9 @@ task:
   agentModelOverrides:
     scout: openai-codex/gpt-6-luna
     sonic: openai-codex/gpt-6-luna
-    task: openai-codex/gpt-6-astra
-    reviewer: openai-codex/gpt-6-astra
-    security-reviewer: openai-codex/gpt-6-astra
+    task: openai-codex/gpt-6.2-astra
+    reviewer: openai-codex/gpt-6.2-astra
+    security-reviewer: openai-codex/gpt-6.2-astra
   disabledAgents: []
   enableEffort: true
   maxEffort: high
