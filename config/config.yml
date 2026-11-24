@@ -143,7 +143,8 @@ disabledExtensions:
   - rule:rs-result-type
   - rule:rs-match-ergonomics
 codexResets:
-  autoRedeem: "no"
+  autoRedeem5h: "no"
+  autoRedeemWeekly: "no"
 retry:
   modelFallback: false
 cycleOrder:
