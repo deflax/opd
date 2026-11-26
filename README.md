@@ -30,10 +30,10 @@ The repository contains configuration templates, not provider credentials.
 ./build                       # Build omp; reuse the existing toolchain image
 ./build --no-cache            # Reinstall omp without rebuilding the toolchain
 ./build --base && ./build     # Rebuild tools/browser, then omp
-./build --build-arg OMP_VERSION=19.1.1  # Example explicit version override
+./build --build-arg OMP_VERSION=19.2.1  # Example explicit version override
 ```
 
-The default omp version is [19.1.1](https://github.com/can1357/oh-my-pi/releases/tag/v19.1.1), pinned in `Dockerfile`.
+The default omp version is [19.2.1](https://github.com/can1357/oh-my-pi/releases/tag/v19.2.1), pinned in `Dockerfile`.
 `./build` creates the base image if missing; otherwise it reuses it. Rebuild both images after `Dockerfile.base` or `playwright-chromium-launcher` changes.
 CodeMap resolves the [latest stable release](https://github.com/JordanCoin/codemap/releases/latest) when its install layer runs and verifies release checksums.
 Refresh floating toolchain dependencies despite Docker's build cache with `./build --base --no-cache && ./build`.
